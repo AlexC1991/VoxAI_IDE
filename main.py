@@ -22,15 +22,29 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = handle_exception
 
+import logging
+
+# Configure Logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("debug.log", mode='w', encoding='utf-8')
+    ]
+)
+
+log = logging.getLogger(__name__)
+
 def main():
-    print("Initializing Application...")
+    log.info("Initializing Application...")
     app = QApplication(sys.argv)
     
     # Optional: Set global stylesheet or theme here
-    print("Creating Main Window...")
+    log.info("Creating Main Window...")
     window = CodingAgentIDE()
     window.show()
-    print("Starting Main Loop...")
+    log.info("Starting Main Loop...")
     sys.exit(app.exec())
 
 if __name__ == "__main__":

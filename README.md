@@ -11,7 +11,7 @@
 
 ---
 
-![Version](https://img.shields.io/badge/Version-1.1%20Review-blue?style=flat-square) ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square) ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Mac-lightgrey?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.2%20Dark%20Mode-blue?style=flat-square) ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square) ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Mac-lightgrey?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=flat-square)
 
 ## 🎯 What This Is (And Isn’t)
 
@@ -19,6 +19,7 @@
 - A **local-first** autonomous coding agent.
 - A **real execution environment** (subprocess, not sandboxed).
 - A **developer-controlled** AI workflow loop.
+- **New**: Features a polished **VS Code Dark** theme and compact chat interface.
 
 **This is not:**
 - A browser-based coding chatbot.

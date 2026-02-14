@@ -9,6 +9,7 @@ from ui.editor_panel import EditorPanel
 from ui.file_tree_panel import FileTreePanel
 from ui.debug_drawer import DebugDrawer
 from core.runner import Runner
+from core.agent_tools import set_project_root
 
 class CodingAgentIDE(QMainWindow):
     def __init__(self):
@@ -88,10 +89,11 @@ class CodingAgentIDE(QMainWindow):
         self.select_project_folder()
         
         if not self.project_path:
-             self.project_path = os.getcwd() # Fallback
-             # Update panels if fallback
+             self.project_path = os.getcwd()
              self.tree_panel.set_root_path(self.project_path)
              self.settings_manager.set_last_project_path(self.project_path)
+
+        set_project_root(self.project_path)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -181,9 +183,10 @@ class CodingAgentIDE(QMainWindow):
             # 1. Update File Tree
             self.tree_panel.set_root_path(folder)
             
-            # 2. Update System CWD (Access for AI/Runner)
+            # 2. Update System CWD & project root (Access for AI/Runner)
             os.chdir(folder)
-            
+            set_project_root(folder)
+
             # 3. Visual Feedback
             self.setWindowTitle(f"VoxAI Coding Agent IDE - {folder}")
             self.chat_panel.add_message("System", f"Switched project to: {folder}")

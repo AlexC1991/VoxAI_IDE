@@ -69,7 +69,6 @@ class Runner(QObject):
                 start_dir = parent
                 
             self.process.start(python_exe, [script_path])
-            self.process.start(python_exe, [script_path])
         
         elif ext in ['.js', '.mjs', '.cjs']:
             self.process.start("node", [script_path])

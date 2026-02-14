@@ -1,22 +1,27 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
-                             QLineEdit, QPushButton, QLabel, QListWidgetItem, QComboBox)
-from PySide6.QtCore import Signal, Qt, QThread, QObject
-from ui.settings_dialog import SettingsDialog
-from core.settings import SettingsManager
+import os
+import sys
+import re
+import logging
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, 
+    QTextEdit, QPushButton, QFrame, QSizePolicy
+)
+from PySide6.QtCore import Signal, Qt, QThread, QObject, QTimer, QEvent
+from PySide6.QtGui import QTextCursor
+
 from core.settings import SettingsManager
 from core.ai_client import AIClient
 from core.code_parser import CodeParser
 from core.agent_tools import AgentToolHandler
-from ui.widgets.chat_items import MessageItem
-import re
-import os
-import sys
+from ui.widgets.chat_items import MessageItem, ProgressItem
 
+log = logging.getLogger(__name__)
+
+# ... (omitted workers) ...
 
 class AIWorker(QObject):
     chunk_received = Signal(str)
     finished = Signal()
-    tool_requested = Signal(str, str) # tool_name, result
     
     def __init__(self, message_history, model):
         super().__init__()
@@ -25,17 +30,12 @@ class AIWorker(QObject):
         self.client = AIClient()
 
     def run(self):
-        print(f"[DEBUG] AIWorker running with model: {self.model}")
+        log.debug("AIWorker running with model: %s", self.model)
         
-        # Inject CWD into system prompt if it's the first message or if we want to ensure it's there.
-        # Ideally, we format the System Prompt in the message history before sending.
-        # But prompts.py is static. Let's do a quick replace if it's in the messages.
-        
+        # Helper: Inject CWD into system prompt if needed
         import os
         cwd = os.getcwd().replace("\\", "/")
         
-        # Deep copy messages to avoid mutating the UI state permanently with formatting?
-        # Or just update the system message.
         final_messages = []
         for msg in self.message_history:
             if msg.get("role") == "system":
@@ -51,27 +51,17 @@ class AIWorker(QObject):
             stream = self.client.stream_chat(final_messages, self.model)
             for chunk in stream:
                 if QThread.currentThread().isInterruptionRequested():
-                    print("[DEBUG] AIWorker Interrupted!")
+                    log.debug("AIWorker Interrupted!")
                     break
                 full_response += chunk
                 self.chunk_received.emit(chunk)
-                
-                # Experimental: Stop if tool tag detected?
-                # "/>" is weak, "</write_file>" is strong.
-                # Let's rely on prompt first.
-            
-            # Post-processing for Tools (Simple Regex for now, synchronous)
-            # In a real agent loop, this would happen iteratively.
-            # Here we just check if the LAST response had a tool call and execute it?
-            # Or we let the ChatPanel handle the logic. 
-            # Better to just finish and let ChatPanel parse.
-            
         except Exception as e:
-            print(f"[ERROR] AIWorker run failed: {e}")
+            log.error("AIWorker run failed: %s", e)
             self.chunk_received.emit(f"\n[Error: {str(e)}]\n")
         
-        print("[DEBUG] AIWorker finished run.")
+        log.debug("AIWorker finished run.")
         self.finished.emit()
+
 
 class ToolWorker(QObject):
     """Executes tool calls in a background thread."""
@@ -85,9 +75,6 @@ class ToolWorker(QObject):
         self.tool_calls = tool_calls
 
     def run(self):
-        from core.agent_tools import AgentToolHandler
-        import os
-        
         tool_outputs = []
         
         for call in self.tool_calls:
@@ -99,6 +86,7 @@ class ToolWorker(QObject):
             args = call['args']
             
             try:
+                # Map commands to handler methods
                 if cmd == 'list_files':
                     path = args.get('path', '.')
                     self.step_started.emit("📂", f"Listing files in {path}...")
@@ -116,17 +104,15 @@ class ToolWorker(QObject):
                 elif cmd == 'write_file':
                     path = args.get('path')
                     content = args.get('content')
-                    
                     self.step_started.emit("📝", f"Writing {os.path.basename(path)}...")
                     
-                    # Syntax Check
                     syntax_error = AgentToolHandler.validate_syntax(content, path)
                     if syntax_error:
                         tool_outputs.append(f"System: [Syntax Error] in '{path}':\n{syntax_error}")
                         self.step_finished.emit(f"Syntax Error in {os.path.basename(path)}", syntax_error, "Failed")
                         continue
 
-                    # Diff
+                    # Diff generation for safety check (optional, but good for logs)
                     diff_text = None
                     diff_str = "modified"
                     full_path = os.path.abspath(path)
@@ -135,8 +121,8 @@ class ToolWorker(QObject):
                             with open(full_path, 'r', encoding='utf-8') as f:
                                 old_content = f.read()
                             diff_text = AgentToolHandler.get_diff(old_content, content, os.path.basename(path))
-                        except:
-                            diff_text = "[Error diff]"
+                        except Exception:
+                            diff_text = "[Error generating diff]"
                     else:
                         diff_str = "new"
                         diff_text = f"[New File]\n{content}"
@@ -182,7 +168,7 @@ class ToolWorker(QObject):
 
                 elif cmd == 'get_file_structure':
                     path = args.get('path')
-                    self.step_started.emit("🌳", f" analyzing {os.path.basename(path)}...")
+                    self.step_started.emit("🌳", f"Analyzing {os.path.basename(path)}...")
                     result = AgentToolHandler.get_file_structure(path)
                     tool_outputs.append(f"Structure of '{path}':\n{result}")
                     self.step_finished.emit(f"Got structure of {path}", None, "Done")
@@ -193,79 +179,180 @@ class ToolWorker(QObject):
         
         self.finished.emit("\n\n".join(tool_outputs))
 
+
+# ---------------------------------------------------------------------------
+# Main Chat Panel
+# ---------------------------------------------------------------------------
 class ChatPanel(QWidget):
     message_sent = Signal(str)
     code_generated = Signal(str, str) # language, code
     file_updated = Signal(str) # absolute path
 
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        print("[DEBUG] ChatPanel initializing...")
+        log.info("ChatPanel initializing...")
         self.settings_manager = SettingsManager()
+        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
         
-        # Header Removed (Moved to Main Window)
-        
-        # Chat History
-        
-        # Toolbar
+        # 1. Toolbar (Clear Context)
         toolbar = QWidget()
+        toolbar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #2d2d2d;") # Match main theme
         tb_layout = QHBoxLayout(toolbar)
-        tb_layout.setContentsMargins(5, 5, 5, 5)
+        tb_layout.setContentsMargins(8, 4, 8, 4)
         
         self.clear_btn = QPushButton("🧹 Clear Context")
-        self.clear_btn.setToolTip("Reset conversation memory to save tokens")
+        self.clear_btn.setToolTip("Reset conversation memory")
         self.clear_btn.clicked.connect(self.clear_context)
-        self.clear_btn.setStyleSheet("padding: 3px;")
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #52525b;
+                border: 1px solid #27272a;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                color: #e4e4e7;
+                border-color: #52525b;
+            }
+        """)
         tb_layout.addWidget(self.clear_btn)
         tb_layout.addStretch()
-        
         self.layout.addWidget(toolbar)
+
+        # 2. Scroll Area for Chat
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("""
+            QScrollArea { border: none; background-color: #1e1e1e; }
+            QScrollBar:vertical {
+                border: none;
+                background: #1e1e1e;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #424242;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
         
-        # Chat History
-        self.chat_history = QListWidget()
-        self.chat_history.setAlternatingRowColors(True)
-        self.chat_history.setWordWrap(True)
-        self.layout.addWidget(self.chat_history)
+        self.chat_container = QWidget()
+        self.chat_container.setStyleSheet("background-color: #1e1e1e;")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setContentsMargins(10, 10, 10, 10)
+        self.chat_layout.setSpacing(10)
+        self.chat_layout.addStretch() # Pushes messages to bottom initially, or top? 
+        # Actually for a chat log, we want them at the top usually, but let's see. 
+        # Standard terminal: text starts at top.
         
-        # Input Area
+        self.scroll_area.setWidget(self.chat_container)
+        self.layout.addWidget(self.scroll_area, 1)
+
+        # 3. Input Area
         input_container = QWidget()
-        input_layout = QHBoxLayout(input_container)
-        input_layout.setContentsMargins(0, 5, 0, 5)
+        input_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        input_container.setStyleSheet("background-color: #1e1e1e; border-top: 1px solid #2d2d2d;")
+        input_layout = QHBoxLayout(input_container) # Horizontal
+        input_layout.setContentsMargins(8, 8, 8, 8) # Tighter margins
+        input_layout.setSpacing(8)
         
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Describe what you want to build...")
-        self.chat_input.returnPressed.connect(self.send_message)
+        # Text Edit for multi-line input
+        self.chat_input = QTextEdit()
+        self.chat_input.setPlaceholderText("Type a message...")
+        self.chat_input.setFixedHeight(38) # Compact height (approx 1 line + padding)
+        self.chat_input.setStyleSheet("""
+            QTextEdit {
+                background-color: #252526;
+                color: #cccccc;
+                border: 1px solid #3c3c3c;
+                border-radius: 4px;
+                padding: 4px 8px; /* Tighter padding */
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 13px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #007fd4;
+            }
+        """)
+        # Install event filter or handle key press for Enter=Send
+        self.chat_input.installEventFilter(self)
+        
+        # Buttons (Right side)
+        btn_layout = QVBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(0)
         
         self.send_btn = QPushButton("Send")
+        self.send_btn.setFixedSize(60, 38) # Match input height
         self.send_btn.clicked.connect(self.send_message)
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #007fd4;
+                color: #ffffff;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #026ec1; }
+            QPushButton:disabled { background-color: #3e3e42; color: #6e6e6e; }
+        """)
         
         self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setFixedSize(60, 38) # Match input height
         self.stop_btn.clicked.connect(self.stop_ai_worker)
-        self.stop_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
-        self.stop_btn.hide() # Hidden by default
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ce9178;
+                color: #1e1e1e;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #be8168; }
+        """)
+        self.stop_btn.hide()
+        
+        btn_layout.addWidget(self.stop_btn)
+        btn_layout.addWidget(self.send_btn)
         
         input_layout.addWidget(self.chat_input)
-        input_layout.addWidget(self.send_btn)
-        input_layout.addWidget(self.stop_btn)
+        input_layout.addLayout(btn_layout)
         
-        self.layout.addWidget(input_container)
-        
+        self.layout.addWidget(input_container, 0)
+
         # Threading state
         self.ai_thread = None
         self.ai_worker = None
+        self.tool_thread = None
         
-        # Internal message memory for context
+        # Context
         from core.prompts import SystemPrompts
         self.messages = [
             {"role": "system", "content": SystemPrompts.CODING_AGENT}
         ]
         
-        # INJECT INITIAL CONTEXT
-        # The AI needs to know what files exist immediately.
-        import os
+        # Inject Initial Context
+        self.inject_initial_context()
+
+    def eventFilter(self, obj, event):
+        if obj == self.chat_input and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Return and not (event.modifiers() & Qt.ShiftModifier):
+                self.send_message()
+                return True
+        return super().eventFilter(obj, event)
+
+    def inject_initial_context(self):
         try:
             cwd = os.getcwd()
             files = []
@@ -276,58 +363,75 @@ class ChatPanel(QWidget):
                     rel_path = os.path.relpath(os.path.join(root, f), cwd)
                     files.append(rel_path)
             
-            file_list_str = "\n".join(files[:50]) # Limit to 50 for now
+            file_list_str = "\n".join(files[:50])
             if len(files) > 50: file_list_str += "\n...(more files)..."
             
             context_msg = f"Current Project Structure ({cwd}):\n{file_list_str}\n\nStart by listing files if you need to double check."
             self.messages.append({"role": "system", "content": context_msg})
         except Exception as e:
-            print(f"Error injecting context: {e}")
+            log.error("Error injecting context: %s", e)
 
     def clear_context(self):
-        """Resets the conversation history to save tokens."""
-        # Keep only System Prompt and Initial Context
         initial_msgs = self.messages[:2] 
         self.messages = initial_msgs
         
-        self.chat_history.clear()
-        self.add_message("System", "🧹 Context cleared. Memory reset.")
+        # Clear UI logic for QLayout is tricky - safe delete widgets
+        self.clear_layout(self.chat_layout)
+        self.chat_layout.addStretch() # Re-add stretch
         
-        # Re-display the initial context signal?
-        # Maybe just leave it blank.
+        self.add_message("System", "🧹 Context cleared. Memory reset.")
 
-    # Methods moved to MainWindow to control Global Toolbar
+    def clear_layout(self, layout):
+        if layout is None: return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            else:
+                self.clear_layout(item.layout())
 
     def send_message(self):
-        text = self.chat_input.text().strip()
+        text = self.chat_input.toPlainText().strip()
+        if not text: return
         self.send_worker(text)
 
     def add_message(self, role, content):
-        # Create Custom Widget
-        
-        item = QListWidgetItem()
-        # Estimate size? MessageItem will handle layout.
-        # We need to set item size hint after creating widget.
+        # Remove the stretch at the end temporarily?
+        # Standard approach: add widget, then ensure scroll to bottom.
         
         msg_widget = MessageItem(role, content)
-        item.setSizeHint(msg_widget.sizeHint())
+        # Add before the stretch item? 
+        # Actually with addStretch() at the top, we want to add *after* it if we want bottom alignment?
+        # Or if we want top alignment (slack style), we add to top and stretch at bottom.
         
-        self.chat_history.addItem(item)
-        self.chat_history.setItemWidget(item, msg_widget)
-        self.chat_history.scrollToBottom()
+        # Current layout: stretch is at index 0.
+        # We want messages to flow from top to bottom.
+        # So we should insert at layout.count() - 1 (before stretch) 
+        # OR just append if we don't use stretch for bottom-pushing.
+        
+        # Let's remove stretch logic for simplicity and just stack them top-down.
+        # We removed the "addStretch" in clear_context for safety.
+        # Let's just use top-stacking. 
+        # To make them push up from bottom, we place a stretch at index 0.
+        
+        # Let's try standard top-down. 
+        # If we want them to fill from bottom, we use insertWidget(count-1, widget).
+        
+        # For now, just append.
+        self.chat_layout.addWidget(msg_widget)
+        
+        # Scroll to bottom
+        QTimer.singleShot(10, self.scroll_to_bottom)
+        return msg_widget
 
-    def trigger_fix(self, error_message):
-        """Called when a script fails. Sends the error to the AI."""
-        context = f"The script failed with the following error. Please analyze it and provide the fixed code.\n\nError Output:\n{error_message}"
-        
-        # Simulate user sending this message
-        self.send_worker(context, is_automated=True)
+    def scroll_to_bottom(self):
+        scrollbar = self.scroll_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def send_worker(self, text, is_automated=False, visible=True):
-        if not text:
-            return
-            
-        # UI Update
+        if not text: return
+        
         if not is_automated:
             self.chat_input.clear()
         
@@ -336,64 +440,35 @@ class ChatPanel(QWidget):
             self.add_message(role, text)
         
         self.message_sent.emit(text)
-        
-        # State Update
         self.messages.append({"role": "user", "content": text})
         
-        # Disable input while processing
         self.send_btn.setEnabled(False)
-        
-        # Start Worker
         self.start_ai_worker()
 
     def start_ai_worker(self):
-        # Clean up old thread if it exists but is finished
-        if self.ai_thread is not None:
-            if self.ai_thread.isRunning():
-                print("[DEBUG] Thread already running, ignoring request.")
-                return
-            else:
-                # Needed to ensure valid state before overwriting
-                self.ai_thread.wait()
-                self.ai_thread = None
+        if self.ai_thread and self.ai_thread.isRunning():
+            log.warning("Thread already running, ignoring request.")
+            return
 
-        print("[DEBUG] Starting AI Worker thread...")
+        log.info("Starting AI Worker thread...")
         model = self.settings_manager.get_selected_model()
         
-        # SLIDING WINDOW / TOKEN SAVING
+        # Context Window Logic (Simple Truncation)
         full_history = self.messages
-        if len(full_history) > 22: # 2 + 20
+        if len(full_history) > 22:
             context_window = full_history[:2] + full_history[-20:]
-            print(f"[DEBUG] Context truncated. Sending {len(context_window)} messages")
+            log.debug("Context truncated. Sending %d messages", len(context_window))
         else:
             context_window = full_history
         
         # Create Progress Item
-        from ui.widgets.chat_items import ProgressItem
-        item = QListWidgetItem()
         self.current_progress_widget = ProgressItem()
-        item.setSizeHint(self.current_progress_widget.sizeHint()) # Initial hint
-        self.chat_history.addItem(item)
-        self.chat_history.setItemWidget(item, self.current_progress_widget)
-        self.current_progress_item = item # Keep ref to resize later
-        
-        # Connect resize signal
-        # Connect resize signal
-        self.current_progress_widget.size_changed.connect(lambda: item.setSizeHint(self.current_progress_widget.sizeHint()))
-        self.current_progress_widget.show_detail_requested.connect(self.show_diff_dialog)
-        
-        from ui.widgets.chat_items import MessageItem
-        
-        # Prepare AI Bubble (Empty for now, will fill if text exists)
-        self.current_ai_item = QListWidgetItem()
-        self.current_ai_widget = MessageItem("AI", "")
-        self.current_ai_item.setSizeHint(self.current_ai_widget.sizeHint())
-        
-        self.chat_history.addItem(self.current_ai_item)
-        self.chat_history.setItemWidget(self.current_ai_item, self.current_ai_widget)
-        self.chat_history.scrollToBottom()
+        self.chat_layout.addWidget(self.current_progress_widget)
+        self.current_ai_widget = None # Will create lazily
         self.current_ai_text = "AI: "
         
+        self.scroll_to_bottom()
+
         self.ai_thread = QThread()
         self.ai_worker = AIWorker(list(context_window), model)
         self.ai_worker.moveToThread(self.ai_thread)
@@ -406,73 +481,41 @@ class ChatPanel(QWidget):
         self.ai_thread.finished.connect(self.ai_thread.deleteLater)
         self.ai_thread.finished.connect(self.cleanup_thread)
 
-        self.ai_thread.finished.connect(self.cleanup_thread)
-
         self.stop_btn.show()
         self.send_btn.hide()
         self.ai_thread.start()
 
     def stop_ai_worker(self):
-        """Manually stops the AI generation."""
         if self.ai_thread and self.ai_thread.isRunning():
-            print("[ChatPanel] Stopping AI worker...")
+            log.info("Stopping AI worker...")
             self.ai_thread.requestInterruption()
             self.ai_thread.quit()
-            self.ai_thread.wait(1000) # Wait up to 1s
+            self.ai_thread.wait(1000)
             
-            # Force cleanup if still running?
             if self.ai_thread.isRunning():
-                self.ai_thread.terminate() # Hard kill if needed (dangerous but effective for stop button)
+                self.ai_thread.terminate() 
             
             self.cleanup_thread()
             if hasattr(self, 'current_progress_widget'):
                 self.current_progress_widget.add_step("🛑", "Stopped by user.")
                 self.current_progress_widget.finish()
             
-            # Reset UI
             self.on_ai_finished(interrupted=True)
 
     def cleanup_thread(self):
-        # Safely clear the reference so start_ai_worker doesn't try to reuse a dead object
         if self.ai_thread:
-            print("[DEBUG] Cleaning up AI Thread ref.")
+            log.debug("Cleaning up AI Thread ref.")
             self.ai_thread = None
 
     def clean_display_text(self, text):
         """Removes XML tags from the text for display."""
         import re
-        # 1. Remove thoughts (handled separately in UI)
         text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL)
-        
-        # 2. Remove specific tool tags
-        # Self-closing tags: <tool ... />
         text = re.sub(r'<(list_files|read_file|move_file|copy_file|delete_file|search_files|get_file_structure)[^>]*?/>', '', text, flags=re.DOTALL)
-        
-        # Block tags: <write_file ...> ... </write_file>
-        # We want to hide the content AND the tags.
-        # During streaming, we might have an open tag but no closing tag yet.
-        # We should hide from <write_file...> to </write_file> OR to the end of string if still open.
-        
-        # Match complete blocks first
         text = re.sub(r'<write_file[^>]*?>.*?</write_file>', '', text, flags=re.DOTALL)
-        
-        # Match partial blocks (open tag to end of string)
-        # Only do this if we are seemingly inside a block.
-        # Check if there is an unclosed <write_file tag
-        # Count open vs closed?
-        # Simple heuristic: if <write_file exists but no </write_file> after it.
-        
-        # Use a non-greedy match for the start, then consume rest
-        # But be careful not to hide "I am writing <write_file" (intro text)
-        # The regex `<write_file[^>]*?>.*` matches from the tag start.
         
         if '<write_file' in text and '</write_file>' not in text:
              text = re.sub(r'<write_file[^>]*?>.*', ' [Writing File...]', text, flags=re.DOTALL)
-        elif '<write_file' in text:
-             # Case where there might be multiple blocks, some closed, last one open.
-             # This is complex regex.
-             # Let's simple split by <write_file and check.
-             pass
              
         return text.strip()
 
@@ -480,114 +523,86 @@ class ChatPanel(QWidget):
         self.current_ai_text += chunk
         
         # Extract thoughts
-        import re
         thoughts = re.findall(r'<thought>(.*?)</thought>', self.current_ai_text, re.DOTALL)
         if thoughts:
              combined_thoughts = "\n".join(thoughts)
              self.current_progress_widget.set_thought(combined_thoughts)
              
-        # Clean text for display
         display_text = self.clean_display_text(self.current_ai_text)
         
-        # Update the Custom MessageItem Widget
-        if hasattr(self, 'current_ai_widget'):
-             self.current_ai_widget.content_label.setText(display_text)
-             # Only resize if text changed meaningfully? 
-             # self.current_ai_item.setSizeHint(self.current_ai_widget.sizeHint()) 
-             # SizeHint update might be expensive on every chunk, but needed for wrapping.
-             self.current_ai_item.setSizeHint(self.current_ai_widget.sizeHint())
-        else:
-             self.current_ai_item.setText(display_text)
-        
-        self.chat_history.scrollToBottom()
-        
-        # Resize progress item as content grows (thoughts)
-        self.current_progress_item.setSizeHint(self.current_progress_widget.sizeHint())
+        # Lazy Creation of MessageItem
+        if not self.current_ai_widget and display_text.strip():
+             self.current_ai_widget = self.add_message("AI", "")
+             
+        if self.current_ai_widget:
+             # Only update text if it changed (optimization?) 
+             # For RichText label, setText is moderately expensive.
+             # But we need to update.
+             # We should probably format it incrementally? No, full re-render for now.
+             # MessageItem internal format helper handles syntax highlighting.
+             # Accessing internal label directly is naughty but effective.
+             formatted = self.current_ai_widget._format(display_text)
+             self.current_ai_widget.content_label.setText(formatted)
+             self.scroll_to_bottom()
 
     def on_ai_finished(self, interrupted=False):
-        print("[DEBUG] AI Worker finished signal received.")
-        self.current_progress_widget.finish()
+        log.debug("AI Worker finished signal received.")
+        if hasattr(self, 'current_progress_widget'):
+            self.current_progress_widget.finish()
         
         if interrupted:
             self.stop_btn.hide()
             self.send_btn.show()
             self.send_btn.setEnabled(True)
             return
-            
-        # Save full AI response (WITH thoughts) to history context
+
         full_response = self.current_ai_text.replace("AI: ", "", 1)
         self.messages.append({"role": "assistant", "content": full_response})
+        log.debug("Raw AI Response length: %d chars", len(full_response))
         
-        # --- PARSE TOOLS ---
-        tool_calls = []
-        import re
+        # Parse Tools
+        tool_calls = self._parse_tools(full_response)
         
-        # 1. List Files
-        for match in re.finditer(r'<list_files(?: path="(.*?)")?.*?>', full_response):
-            tool_calls.append({'cmd': 'list_files', 'args': {'path': match.group(1) or '.'}})
-
-        # 2. Read Files
-        for match in re.finditer(r'<read_file path="(.*?)".*?/>', full_response):
-            tool_calls.append({'cmd': 'read_file', 'args': {'path': match.group(1)}})
-
-        # 3. Write Files
-        for match in re.finditer(r'<write_file path="(.*?)"\s*>(.*?)</write_file>', full_response, re.DOTALL):
-            tool_calls.append({'cmd': 'write_file', 'args': {'path': match.group(1), 'content': match.group(2)}})
-
-        # 4. Move Files
-        for match in re.finditer(r'<move_file src="(.*?)" dst="(.*?)"\s*/>', full_response):
-            tool_calls.append({'cmd': 'move_file', 'args': {'src': match.group(1), 'dst': match.group(2)}})
-
-        # 5. Copy Files
-        for match in re.finditer(r'<copy_file src="(.*?)" dst="(.*?)"\s*/>', full_response):
-             tool_calls.append({'cmd': 'copy_file', 'args': {'src': match.group(1), 'dst': match.group(2)}})
-
-        # 6. Delete Files
-        for match in re.finditer(r'<delete_file path="(.*?)"\s*/>', full_response):
-             tool_calls.append({'cmd': 'delete_file', 'args': {'path': match.group(1)}})
-
-        # 7. Search Files
-        for match in re.finditer(r'<search_files query="(.*?)"(?: root_dir="(.*?)")?\s*/>', full_response):
-             tool_calls.append({'cmd': 'search_files', 'args': {'query': match.group(1), 'root_dir': match.group(2)}})
-
-        # 8. Get File Structure
-        for match in re.finditer(r'<get_file_structure path="(.*?)"\s*/>', full_response):
-             tool_calls.append({'cmd': 'get_file_structure', 'args': {'path': match.group(1)}})
-
         if not tool_calls:
-            # No tools, just finish
             self.stop_btn.hide()
             self.send_btn.show()
             self.send_btn.setEnabled(True)
             
-            # Check for code block to emit
+            # Check for code block
             lang, code = CodeParser.extract_code(full_response)
             if code:
                 self.code_generated.emit(lang, code)
                 
-            # Fallback for empty text (if just thoughts were generated)
             cleaned_text = self.clean_display_text(full_response)
             if not cleaned_text.strip() and not code:
-                # If we have thoughts but no text, maybe the AI is just thinking?
-                # But if it finished, we should say something.
                 self.add_message("AI", "(Thinking complete. No output generated.)")
             return
 
-        # --- EXECUTE TOOLS ASYNC ---
-        print(f"[DEBUG] Starting ToolWorker with {len(tool_calls)} calls.")
+        # Truncation check
+        if full_response.strip() and not tool_calls and not full_response.strip().endswith(('.', '>', '}', ']', ')', '!')):
+            # Heuristic check for truncation (not ending with punctuation or closing bracket/tag)
+            # Or check length limit? Actually easier is if it ends in standard punctuation.
+            # But code blocks end with ``` which is not checked here.
+            # Let's check for unfinished tags.
+            if full_response.count('<') > full_response.count('>'):
+                self.add_message("System", "⚠️ Warning: The AI response appears truncated (missing closing tag). Try asking to continue.")
+            elif not full_response.endswith(('.', '?', '!', '>', '```')):
+                 # Maybe truncated text?
+                 pass
+
+        # Execute Tools
+        log.info("Starting ToolWorker with %d calls.", len(tool_calls))
         self.tool_thread = QThread()
         self.tool_worker = ToolWorker(tool_calls)
         self.tool_worker.moveToThread(self.tool_thread)
         
         self.tool_thread.started.connect(self.tool_worker.run)
         
-        # Connect Signals
         self.tool_worker.step_started.connect(self.on_tool_step_started)
         self.tool_worker.step_finished.connect(self.on_tool_step_finished)
         self.tool_worker.file_changed.connect(self.file_updated.emit)
         self.tool_worker.finished.connect(self.on_tool_worker_finished)
         
-        # Cleanup
         self.tool_worker.finished.connect(self.tool_thread.quit)
         self.tool_worker.finished.connect(self.tool_worker.deleteLater)
         self.tool_thread.finished.connect(self.tool_thread.deleteLater)
@@ -595,16 +610,41 @@ class ChatPanel(QWidget):
 
         self.tool_thread.start()
 
+    def _parse_tools(self, text):
+        tool_calls = []
+        # Lists
+        for match in re.finditer(r'<list_files(?: path="(.*?)")?.*?>', text):
+            tool_calls.append({'cmd': 'list_files', 'args': {'path': match.group(1) or '.'}})
+        # Reads
+        for match in re.finditer(r'<read_file path="(.*?)".*?/>', text):
+            tool_calls.append({'cmd': 'read_file', 'args': {'path': match.group(1)}})
+        # Writes
+        for match in re.finditer(r'<write_file[^>]*path="(.*?)"[^>]*>(.*?)</write_file>', text, re.DOTALL):
+            tool_calls.append({'cmd': 'write_file', 'args': {'path': match.group(1), 'content': match.group(2)}})
+        # Moves
+        for match in re.finditer(r'<move_file src="(.*?)" dst="(.*?)"\s*/>', text):
+            tool_calls.append({'cmd': 'move_file', 'args': {'src': match.group(1), 'dst': match.group(2)}})
+        # Copies
+        for match in re.finditer(r'<copy_file src="(.*?)" dst="(.*?)"\s*/>', text):
+             tool_calls.append({'cmd': 'copy_file', 'args': {'src': match.group(1), 'dst': match.group(2)}})
+        # Deletes
+        for match in re.finditer(r'<delete_file path="(.*?)"\s*/>', text):
+             tool_calls.append({'cmd': 'delete_file', 'args': {'path': match.group(1)}})
+        # Searches
+        for match in re.finditer(r'<search_files query="(.*?)"(?: root_dir="(.*?)")?\s*/>', text):
+             tool_calls.append({'cmd': 'search_files', 'args': {'query': match.group(1), 'root_dir': match.group(2)}})
+        # Structure
+        for match in re.finditer(r'<get_file_structure path="(.*?)"\s*/>', text):
+             tool_calls.append({'cmd': 'get_file_structure', 'args': {'path': match.group(1)}})
+        return tool_calls
+
     def on_tool_step_started(self, icon, text):
-        # Optional: could show a spinner or log
         pass 
 
     def on_tool_step_finished(self, title, detail, result):
-        # Map result to icon
         icon = "✅" if result == "Done" else "⚠️"
         if "Syntax Error" in title: icon = "❌"
         
-        # Use specific icons based on title keywords
         if "Read" in title: icon = "📖"
         elif "Wrote" in title: icon = "📝"
         elif "Listed" in title: icon = "📂"
@@ -615,22 +655,18 @@ class ChatPanel(QWidget):
         elif "Structure" in title: icon = "🌳"
         
         self.current_progress_widget.add_step(icon, title, detail=detail)
+        self.scroll_to_bottom()
 
     def on_tool_worker_finished(self, combined_output):
-        print("[DEBUG] ToolWorker finished.")
-        
+        log.debug("ToolWorker finished.")
         self.stop_btn.hide()
         self.send_btn.show()
         self.send_btn.setEnabled(True)
         
         if combined_output.strip():
-            # Send results back to AI
-             from PySide6.QtCore import QTimer
-             # Send as automated BUT invisible
              QTimer.singleShot(100, lambda: self.send_worker(combined_output, is_automated=True, visible=False))
 
     def show_diff_dialog(self, title, content):
-        """Shows a dialog with the diff/detail."""
         from PySide6.QtWidgets import QDialog, QTextEdit, QVBoxLayout, QPushButton
         d = QDialog(self)
         d.setWindowTitle(f"Detail: {title}")
@@ -640,13 +676,9 @@ class ChatPanel(QWidget):
         text_edit = QTextEdit()
         text_edit.setPlainText(content)
         text_edit.setReadOnly(True)
-        # Simple coloring for diffs
-        if "diff" in content or "@@" in content:
-             # We could use the MessageItem highlighter logic here too?
-             # For now, just set a font
-             font = text_edit.font()
-             font.setFamily("Consolas")
-             text_edit.setFont(font)
+        font = text_edit.font()
+        font.setFamily("Consolas")
+        text_edit.setFont(font)
              
         layout.addWidget(text_edit)
         
@@ -657,7 +689,7 @@ class ChatPanel(QWidget):
         d.exec()
 
     def closeEvent(self, event):
-        print("[DEBUG] ChatPanel closing, checking thread...")
+        log.debug("ChatPanel closing, checking thread...")
         if self.ai_thread and self.ai_thread.isRunning():
             self.ai_thread.quit()
             self.ai_thread.wait()
