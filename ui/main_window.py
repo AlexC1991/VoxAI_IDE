@@ -230,24 +230,48 @@ class CodingAgentIDE(QMainWindow):
         # --- Center: Run Controls ---
         
         self.run_btn = QPushButton("▶ Run Script")
-        self.run_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50; 
-                color: white; 
-                border: none;
-                padding: 6px 20px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QPushButton:hover { background-color: #45a049; }
-        """)
-        # We need to trigger the editor to save, then run.
-        # EditorPanel.request_run does exactly that.
+        self.run_btn.setStyleSheet("background-color: #4CAF50; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold;")
         self.run_btn.clicked.connect(self.editor_panel.request_run)
         layout.addWidget(self.run_btn)
         
-        self.config_btn = QPushButton("⚙ Run Config")
+        # self.config_btn = QPushButton("⚙ Run Config")
+        # layout.addWidget(self.config_btn)
+        
+        layout.addStretch() # Right Spacer
+
+    def refresh_models(self):
+        """Reloads the model list from settings."""
+        current = self.model_combo.currentText()
+        if not current:
+            current = self.settings_manager.get_selected_model()
+            
+        self.model_combo.clear()
+        models = self.settings_manager.get_enabled_models()
+        
+        for m in models:
+            self.model_combo.addItem(m)
+            
+        # Restore selection
+        index = self.model_combo.findText(current)
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+        else:
+             # Default to first
+             if self.model_combo.count() > 0:
+                 self.model_combo.setCurrentIndex(0)
+
+    def on_model_changed(self, text):
+        if text:
+            self.settings_manager.set_selected_model(text)
+            print(f"[Main] Model switched to: {text}")
+
+    def open_settings(self):
+        from ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            # Settings saved
+            self.refresh_models()
+
         self.config_btn.setStyleSheet("""
             QPushButton {
                 background-color: #3E3E42; 

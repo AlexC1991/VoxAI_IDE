@@ -36,11 +36,22 @@ class SettingsManager:
             except Exception as e:
                 print(f"[Settings] Error loading secrets: {e}")
 
+    def get_api_key(self, provider):
+        """Returns the API key for a specific provider."""
+        # Normalize provider name if needed
+        key = f"api_keys/{provider.lower()}"
+        return self.settings.value(key, "")
+
+    def set_api_key(self, provider, api_key):
+        """Sets the API key for a specific provider."""
+        key = f"api_keys/{provider.lower()}"
+        self.settings.setValue(key, api_key)
+
     def get_openrouter_key(self):
-        return self.settings.value("api_keys/openrouter", "")
+        return self.get_api_key("openrouter")
 
     def set_openrouter_key(self, key):
-        self.settings.setValue("api_keys/openrouter", key)
+        self.set_api_key("openrouter", key)
 
     def get_local_llm_url(self):
         return self.settings.value("urls/local_llm", "http://localhost:11434/v1")
@@ -54,21 +65,23 @@ class SettingsManager:
     def set_selected_model(self, model):
         self.settings.setValue("models/selected", model)
     
-    def get_custom_models(self):
-        # Return a list of custom models if any, generic defaults otherwise
-        default_models = [
-            "openai/gpt-4o",
-            "anthropic/claude-3.5-sonnet",
-            "google/gemini-pro-1.5",
-            "local/llama3",
-            "local/mistral", 
-            "deepseek/deepseek-coder"
-        ]
-        stored = self.settings.value("models/list", default_models)
+    def get_enabled_models(self):
+        """Returns the list of models enabled by the user (Right side list)."""
+        # User requested: "list blank not populate with random LLMs"
+        default_models = [] 
+        stored = self.settings.value("models/enabled_list", default_models)
         return stored if isinstance(stored, list) else default_models
 
+    def set_enabled_models(self, models):
+        """Sets the list of enabled models."""
+        self.settings.setValue("models/enabled_list", models)
+
+    # Legacy support if needed, or remove
+    def get_custom_models(self):
+        return self.get_enabled_models()
+
     def set_custom_models(self, models):
-        self.settings.setValue("models/list", models)
+        self.set_enabled_models(models)
 
     def get_entry_point_script(self):
         return self.settings.value("entry_point_script", "")
@@ -81,3 +94,4 @@ class SettingsManager:
 
     def set_last_project_path(self, path):
         self.settings.setValue("project/path", path)
+

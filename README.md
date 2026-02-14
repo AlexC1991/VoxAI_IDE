@@ -19,6 +19,7 @@
 - A **local-first** autonomous coding agent.
 - A **real execution environment** (subprocess, not sandboxed).
 - A **developer-controlled** AI workflow loop.
+- **New**: Multi-Provider Support (OpenAI, Gemini, Anthropic, DeepSeek, etc.) with tabbed configuration.
 - **New**: Features a polished **VS Code Dark** theme and compact chat interface.
 
 **This is not:**
