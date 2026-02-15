@@ -1,44 +1,54 @@
+
 from PySide6.QtCore import QSettings
 
 class SettingsManager:
+    _instance = None
+    _settings = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(SettingsManager, cls).__new__(cls)
+            cls._settings = QSettings("VoxAI", "CodingAgentIDE")
+        return cls._instance
+
     def __init__(self):
-        # Avoid spamming prints if instantiated often, but good for now
-        # print("[DEBUG] SettingsManager instantiated")
-        self.settings = QSettings("VoxAI", "CodingAgentIDE")
-        self.load_secrets()
+        # Already initialized via __new__
+        pass
+
+    @property
+    def settings(self):
+        return self._settings
 
     def load_secrets(self):
         """Loads secrets from keys/secrets.json if it exists, initializing settings."""
         import os
         import json
-        
+
         # Determine path relative to this file (core/settings.py -> ../keys/secrets.json)
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         secrets_path = os.path.join(base_dir, "keys", "secrets.json")
-        
+
         if os.path.exists(secrets_path):
             try:
                 with open(secrets_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                
+
                 # Load API Keys
                 if "api_keys" in data:
                     for key, value in data["api_keys"].items():
-                        # Only set if not already manually set (or always overwrite? Let's overwrite to allow file control)
                         self.settings.setValue(f"api_keys/{key}", value)
-                        
+
                 # Load URLs
                 if "urls" in data:
                     for key, value in data["urls"].items():
-                         self.settings.setValue(f"urls/{key}", value)
-                         
+                        self.settings.setValue(f"urls/{key}", value)
+
                 print(f"[Settings] Loaded secrets from {secrets_path}")
             except Exception as e:
                 print(f"[Settings] Error loading secrets: {e}")
 
     def get_api_key(self, provider):
         """Returns the API key for a specific provider."""
-        # Normalize provider name if needed
         key = f"api_keys/{provider.lower()}"
         return self.settings.value(key, "")
 
@@ -59,22 +69,73 @@ class SettingsManager:
     def set_local_llm_url(self, url):
         self.settings.setValue("urls/local_llm", url)
 
+    # -----------------------------
+    # RAG / Vector engine settings
+    # -----------------------------
+    def get_vector_engine_url(self):
+        return self.settings.value("urls/vector_engine", "http://127.0.0.1:8091")
+
+    def set_vector_engine_url(self, url: str):
+        self.settings.setValue("urls/vector_engine", (url or "").strip())
+
+    def get_rag_enabled(self) -> bool:
+        val = self.settings.value("rag/enabled", True)
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("1", "true", "yes", "on")
+
+    def set_rag_enabled(self, enabled: bool):
+        self.settings.setValue("rag/enabled", bool(enabled))
+
+    def get_rag_top_k(self) -> int:
+        try:
+            return int(self.settings.value("rag/top_k", 5))
+        except Exception:
+            return 5
+
+    def set_rag_top_k(self, k: int):
+        try:
+            k = int(k)
+        except Exception:
+            k = 5
+        self.settings.setValue("rag/top_k", max(1, min(50, k)))
+
+    def get_rag_min_score(self) -> float:
+        try:
+            return float(self.settings.value("rag/min_score", 0.0))
+        except Exception:
+            return 0.0
+
+    def set_rag_min_score(self, s: float):
+        try:
+            s = float(s)
+        except Exception:
+            s = 0.0
+        self.settings.setValue("rag/min_score", max(0.0, s))
+
     def get_selected_model(self):
         return self.settings.value("models/selected", "openai/gpt-4o")
 
     def set_selected_model(self, model):
         self.settings.setValue("models/selected", model)
-    
+
     def get_enabled_models(self):
         """Returns the list of models enabled by the user (Right side list)."""
-        # User requested: "list blank not populate with random LLMs"
-        default_models = [] 
+        default_models = []
         stored = self.settings.value("models/enabled_list", default_models)
         return stored if isinstance(stored, list) else default_models
 
     def set_enabled_models(self, models):
         """Sets the list of enabled models."""
         self.settings.setValue("models/enabled_list", models)
+
+    def get_embedding_model(self) -> str:
+        """Returns the model used for generating embeddings."""
+        return self.settings.value("models/embedding", "[OpenAI] text-embedding-3-small")
+
+    def set_embedding_model(self, model: str):
+        """Sets the model used for generating embeddings."""
+        self.settings.setValue("models/embedding", model)
 
     # Legacy support if needed, or remove
     def get_custom_models(self):
@@ -94,4 +155,3 @@ class SettingsManager:
 
     def set_last_project_path(self, path):
         self.settings.setValue("project/path", path)
-

@@ -1,0 +1,29 @@
+# Secrets
+config.py
+.runpod.yaml
+.env
+__pycache__/
+*.key
+*.pem
+
+# Large Model Files (Do not commit GGUFs/AWQs)
+models/*.gguf
+models/*.awq
+models/*.bin
+models/
+
+# Keep the models folder itself, just not the content
+!models/.gitkeep
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# IDE Settings
+.vscode/
+.idea/
+
+# System Files
+Thumbs.db
+Desktop.ini

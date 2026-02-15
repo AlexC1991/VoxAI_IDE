@@ -11,6 +11,7 @@ from PySide6.QtGui import QTextCursor
 
 from core.settings import SettingsManager
 from core.ai_client import AIClient
+from core.rag_client import RAGClient
 from core.code_parser import CodeParser
 from core.agent_tools import AgentToolHandler
 from ui.widgets.chat_items import MessageItem, ProgressItem
@@ -21,6 +22,8 @@ log = logging.getLogger(__name__)
 
 class AIWorker(QObject):
     chunk_received = Signal(str)
+    rag_step_started = Signal(str, str) # icon, text
+    rag_step_finished = Signal(str, str, str) # title, detail, result
     finished = Signal()
     
     def __init__(self, message_history, model):
@@ -28,15 +31,43 @@ class AIWorker(QObject):
         self.message_history = message_history
         self.model = model
         self.client = AIClient()
+        self.settings = SettingsManager()
+        self.rag = RAGClient()
 
     def run(self):
         log.debug("AIWorker running with model: %s", self.model)
         
+        # 1. RAG Retrieval disabled (User requested tool-based retrieve only to save tokens)
+        rag_context = ""
+
         # Helper: Inject CWD into system prompt if needed
-        import os
-        cwd = os.getcwd().replace("\\", "/")
+        from core.agent_tools import get_project_root
+        project_root = get_project_root()
+        cwd = project_root.replace("\\", "/")
         
+        # Dynamic File List for context
+        try:
+            files = []
+            for root, dirs, filenames in os.walk(project_root):
+                if ".git" in dirs: dirs.remove(".git")
+                if "__pycache__" in dirs: dirs.remove("__pycache__")
+                if "node_modules" in dirs: dirs.remove("node_modules")
+                
+                for f in filenames:
+                    rel_path = os.path.relpath(os.path.join(root, f), project_root)
+                    files.append(rel_path)
+            
+            file_list_str = "\n".join(files[:40])
+            if len(files) > 40: file_list_str += f"\n...({len(files)-40} more files)..."
+            structure_msg = f"Current Project Structure at {cwd}:\n{file_list_str}\n\nAlways use <list_files /> for full project details."
+        except Exception as e:
+            log.error("Structure injection error: %s", e)
+            structure_msg = f"Working in: {cwd}"
+
         final_messages = []
+        # 2. Inject Dynamic Project Context
+        final_messages.append({"role": "system", "content": f"CRITICAL CONTEXT: {structure_msg}"})
+        
         for msg in self.message_history:
             if msg.get("role") == "system":
                 content = msg["content"]
@@ -46,6 +77,10 @@ class AIWorker(QObject):
             else:
                 final_messages.append(msg)
         
+        # Inject RAG context as a system message if found
+        if rag_context:
+            final_messages.insert(1, {"role": "system", "content": rag_context})
+
         full_response = ""
         try:
             stream = self.client.stream_chat(final_messages, self.model)
@@ -73,6 +108,7 @@ class ToolWorker(QObject):
     def __init__(self, tool_calls):
         super().__init__()
         self.tool_calls = tool_calls
+        self.rag_client = RAGClient()
 
     def run(self):
         tool_outputs = []
@@ -171,13 +207,57 @@ class ToolWorker(QObject):
                     self.step_started.emit("🌳", f"Analyzing {os.path.basename(path)}...")
                     result = AgentToolHandler.get_file_structure(path)
                     tool_outputs.append(f"Structure of '{path}':\n{result}")
-                    self.step_finished.emit(f"Got structure of {path}", None, "Done")
+                    self.step_finished.emit(f"Got structure of: {path}", None, "Done")
+
+                elif cmd == 'execute_command':
+                    command = args.get('command')
+                    cwd = args.get('cwd') or '.'
+                    self.step_started.emit("💻", f"Executing: {command}...")
+                    result = AgentToolHandler.execute_command(command, cwd)
+                    tool_outputs.append(f"Command Output:\n{result}")
+                    self.step_finished.emit(f"Executed: {command}", result, "Done")
+
+                elif cmd == 'search_memory':
+                    query = args.get('query')
+                    self.step_started.emit("🧠", f"Searching memory for '{query}'...")
+                    # Use RAG with the project embedding model
+                    # We reuse the retrieve method but it's generic enough
+                    from core.settings import SettingsManager
+                    model = SettingsManager().get_embedding_model()
+                    chunks = self.rag_client.retrieve(query, model)
+                    
+                    if chunks:
+                        context = self.rag_client.format_context_block(chunks)
+                        tool_outputs.append(f"Memory found for '{query}':\n{context}")
+                        self.step_finished.emit(f"Recall: found {len(chunks)} relevant memories", context, "Done")
+                    else:
+                        tool_outputs.append(f"System: No relevant memories found for '{query}'.")
+                        self.step_finished.emit("Recall: No matches in archive", None, "Done")
 
             except Exception as e:
                 tool_outputs.append(f"System: Error executing {cmd}: {e}")
                 self.step_finished.emit(f"Error in {cmd}", str(e), "Failed")
         
         self.finished.emit("\n\n".join(tool_outputs))
+
+
+class IndexingWorker(QObject):
+    progress = Signal(int, int, str) # current, total, filename
+    finished = Signal(bool)
+
+    def __init__(self, root_path):
+        super().__init__()
+        self.root_path = root_path
+        from core.indexer import ProjectIndexer
+        self.indexer = ProjectIndexer()
+
+    def run(self):
+        try:
+            success = self.indexer.index_project(self.root_path, progress_callback=self.progress.emit)
+            self.finished.emit(success)
+        except Exception as e:
+            log.error("IndexingWorker failed: %s", e)
+            self.finished.emit(False)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +272,11 @@ class ChatPanel(QWidget):
         super().__init__(parent)
         log.info("ChatPanel initializing...")
         self.settings_manager = SettingsManager()
+        
+        # Long-term Memory: Conversation Tracking
+        import uuid
+        self.conversation_id = str(uuid.uuid4())[:8]
+        self.rag_client = RAGClient()
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -220,6 +305,13 @@ class ChatPanel(QWidget):
             }
         """)
         tb_layout.addWidget(self.clear_btn)
+
+        self.index_btn = QPushButton("🗂️ Index Project")
+        self.index_btn.setToolTip("Walk project and index files into vector engine")
+        self.index_btn.clicked.connect(self.start_indexing)
+        self.index_btn.setStyleSheet(self.clear_btn.styleSheet())
+        tb_layout.addWidget(self.index_btn)
+
         tb_layout.addStretch()
         self.layout.addWidget(toolbar)
 
@@ -341,9 +433,6 @@ class ChatPanel(QWidget):
         self.messages = [
             {"role": "system", "content": SystemPrompts.CODING_AGENT}
         ]
-        
-        # Inject Initial Context
-        self.inject_initial_context()
 
     def eventFilter(self, obj, event):
         if obj == self.chat_input and event.type() == QEvent.KeyPress:
@@ -351,25 +440,6 @@ class ChatPanel(QWidget):
                 self.send_message()
                 return True
         return super().eventFilter(obj, event)
-
-    def inject_initial_context(self):
-        try:
-            cwd = os.getcwd()
-            files = []
-            for root, dirs, filenames in os.walk(cwd):
-                if ".git" in dirs: dirs.remove(".git")
-                if "__pycache__" in dirs: dirs.remove("__pycache__")
-                for f in filenames:
-                    rel_path = os.path.relpath(os.path.join(root, f), cwd)
-                    files.append(rel_path)
-            
-            file_list_str = "\n".join(files[:50])
-            if len(files) > 50: file_list_str += "\n...(more files)..."
-            
-            context_msg = f"Current Project Structure ({cwd}):\n{file_list_str}\n\nStart by listing files if you need to double check."
-            self.messages.append({"role": "system", "content": context_msg})
-        except Exception as e:
-            log.error("Error injecting context: %s", e)
 
     def clear_context(self):
         initial_msgs = self.messages[:2] 
@@ -440,7 +510,12 @@ class ChatPanel(QWidget):
             self.add_message(role, text)
         
         self.message_sent.emit(text)
-        self.messages.append({"role": "user", "content": text})
+        new_msg = {"role": "user", "content": text}
+        self.messages.append(new_msg)
+        
+        # ARCHIVE USER MESSAGE (Background)
+        if self.settings_manager.get_rag_enabled():
+            QTimer.singleShot(10, lambda: self.rag_client.ingest_message("user", text, self.conversation_id))
         
         self.send_btn.setEnabled(False)
         self.start_ai_worker()
@@ -453,11 +528,15 @@ class ChatPanel(QWidget):
         log.info("Starting AI Worker thread...")
         model = self.settings_manager.get_selected_model()
         
-        # Context Window Logic (Simple Truncation)
+        # Context Window Logic (Strict Truncation to save tokens)
+        # The user requested max 5 conversations (exchanges) ago.
+        # 5 exchanges = 10 messages (user + assistant).
+        # We always keep messages[0] as it contains the SystemPrompts.CODING_AGENT.
         full_history = self.messages
-        if len(full_history) > 22:
-            context_window = full_history[:2] + full_history[-20:]
-            log.debug("Context truncated. Sending %d messages", len(context_window))
+        if len(full_history) > 11: # 1 system + 10 recent
+            # Keep msg 0, and then the last 10.
+            context_window = [full_history[0]] + full_history[-10:]
+            log.debug("Strict History Truncation: Sending system prompt + last 10 messages.")
         else:
             context_window = full_history
         
@@ -475,6 +554,8 @@ class ChatPanel(QWidget):
         
         self.ai_thread.started.connect(self.ai_worker.run)
         self.ai_worker.chunk_received.connect(self.on_ai_chunk)
+        self.ai_worker.rag_step_started.connect(self.on_tool_step_started)
+        self.ai_worker.rag_step_finished.connect(self.on_tool_step_finished)
         self.ai_worker.finished.connect(self.on_ai_finished)
         self.ai_worker.finished.connect(self.ai_thread.quit)
         self.ai_worker.finished.connect(self.ai_worker.deleteLater)
@@ -557,7 +638,13 @@ class ChatPanel(QWidget):
             return
 
         full_response = self.current_ai_text.replace("AI: ", "", 1)
-        self.messages.append({"role": "assistant", "content": full_response})
+        new_msg = {"role": "assistant", "content": full_response}
+        self.messages.append(new_msg)
+        
+        # ARCHIVE ASSISTANT MESSAGE (Background)
+        if self.settings_manager.get_rag_enabled():
+            QTimer.singleShot(10, lambda: self.rag_client.ingest_message("assistant", full_response, self.conversation_id))
+        
         log.debug("Raw AI Response length: %d chars", len(full_response))
         
         # Parse Tools
@@ -636,6 +723,12 @@ class ChatPanel(QWidget):
         # Structure
         for match in re.finditer(r'<get_file_structure path="(.*?)"\s*/>', text):
              tool_calls.append({'cmd': 'get_file_structure', 'args': {'path': match.group(1)}})
+        # Execute Command
+        for match in re.finditer(r'<execute_command command="(.*?)"(?: cwd="(.*?)")?\s*/>', text):
+             tool_calls.append({'cmd': 'execute_command', 'args': {'command': match.group(1), 'cwd': match.group(2)}})
+        # Search Memory
+        for match in re.finditer(r'<search_memory query="(.*?)"\s*/>', text):
+             tool_calls.append({'cmd': 'search_memory', 'args': {'query': match.group(1)}})
         return tool_calls
 
     def on_tool_step_started(self, icon, text):
@@ -687,6 +780,58 @@ class ChatPanel(QWidget):
         layout.addWidget(btn)
         
         d.exec()
+
+    def start_indexing(self):
+        """Triggers project-wide indexing."""
+        if self.ai_thread and self.ai_thread.isRunning():
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Indexing", "Please wait for AI response to finish.")
+            return
+
+        cwd = os.getcwd()
+        self.add_message("System", f"Starting project indexing for: {cwd}")
+        
+        # UI state
+        self.index_btn.setEnabled(False)
+        self.index_btn.setText("Indexing...")
+        
+        # Create Progress Item
+        self.current_progress_widget = ProgressItem()
+        self.chat_layout.addWidget(self.current_progress_widget)
+        self.scroll_to_bottom()
+        
+        # Thread
+        self.index_thread = QThread()
+        self.index_worker = IndexingWorker(cwd)
+        self.index_worker.moveToThread(self.index_thread)
+        
+        self.index_thread.started.connect(self.index_worker.run)
+        self.index_worker.progress.connect(self.on_indexing_progress)
+        self.index_worker.finished.connect(self.on_indexing_finished)
+        self.index_worker.finished.connect(self.index_thread.quit)
+        self.index_worker.finished.connect(self.index_worker.deleteLater)
+        self.index_thread.finished.connect(self.index_thread.deleteLater)
+        
+        self.index_thread.start()
+
+    def on_indexing_progress(self, current, total, filename):
+        if hasattr(self, 'current_progress_widget'):
+            pct = int((current / total) * 100) if total > 0 else 0
+            self.current_progress_widget.set_thought(f"Indexing: {pct}% | {filename}")
+
+    def on_indexing_finished(self, success):
+        self.index_btn.setEnabled(True)
+        self.index_btn.setText("🗂️ Index Project")
+        
+        if hasattr(self, 'current_progress_widget'):
+            status = "✅ Indexing complete!" if success else "❌ Indexing failed. Check vector engine."
+            self.current_progress_widget.add_step("🗂️", status)
+            self.current_progress_widget.finish()
+        
+        if success:
+            self.add_message("System", "Indexing finished successfully. RAG system is ready.")
+        else:
+            self.add_message("System", "Indexing failed. Ensure Go vector-engine is running on port 8080.")
 
     def closeEvent(self, event):
         log.debug("ChatPanel closing, checking thread...")
