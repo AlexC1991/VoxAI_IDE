@@ -181,15 +181,13 @@ class SettingsManager:
     # Chat Appearance Settings
     # -----------------------------
     def get_chat_user_color(self) -> str:
-        # Force Neon Orange for maximum visibility
-        return "#ff9900" 
+        return self.settings.value("appearance/chat_user_color", "#ff9900") 
 
     def set_chat_user_color(self, color: str):
         self.settings.setValue("appearance/chat_user_color", color)
 
     def get_chat_ai_color(self) -> str:
-        # Force Neon Blue for maximum visibility
-        return "#00f3ff"
+        return self.settings.value("appearance/chat_ai_color", "#00f3ff")
 
     def set_chat_ai_color(self, color: str):
         self.settings.setValue("appearance/chat_ai_color", color)

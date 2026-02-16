@@ -130,6 +130,12 @@ class SettingsDialog(QDialog):
         layout.addWidget(rag_group)
 
         # ---------------------------
+        # Appearance Section (New Location)
+        # ---------------------------
+        appearance_group = self.setup_appearance_group()
+        layout.addWidget(appearance_group)
+
+        # ---------------------------
         # Provider selection (existing)
         # ---------------------------
         top_frame = QGroupBox("Select Provider")
@@ -156,12 +162,6 @@ class SettingsDialog(QDialog):
             self.setup_provider_page(page, p_id, p_name, p_key_name, p_defaults)
             self.stack.addWidget(page)
 
-        # Add Appearance Tab (Index = len(providers))
-        self.appearance_page = self.setup_appearance_tab()
-        self.stack.addWidget(self.appearance_page)
-        
-        # Add entry to combobox
-        self.provider_combo.addItem("Appearance")
 
         # Global buttons
         btn_layout = QHBoxLayout()
@@ -275,51 +275,53 @@ class SettingsDialog(QDialog):
 
         self.populate_lists(p_id, p_name, p_defaults, available_list, selected_list)
 
-    def setup_appearance_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+    def setup_appearance_group(self):
+        # Return a QGroupBox instead of a Page
+        group = QGroupBox("Appearance")
+        layout = QHBoxLayout()
+        layout.setSpacing(20)
+        layout.setContentsMargins(15, 15, 15, 15)
 
-        # -- Description --
-        desc = QLabel("Customize the visual appearance of the chat interface.")
-        desc.setStyleSheet("color: #a1a1aa; font-style: italic;")
-        layout.addWidget(desc)
+        # Description (Small side note?)
+        # desc = QLabel("Customize Colors:")
+        # desc.setStyleSheet("color: #a1a1aa; font-style: italic;")
+        # layout.addWidget(desc)
 
-        # -- Colors Form --
-        form_group = QGroupBox("Chat Colors")
-        form_layout = QGridLayout()
-        form_layout.setSpacing(10)
+        # Grid for colors
+        grid = QGridLayout()
+        grid.setSpacing(10)
 
         # User Color
         self.user_color_input = QLineEdit()
         self.user_color_input.setText(self.settings_manager.get_chat_user_color())
         self.user_color_input.setPlaceholderText("#d4d4d8")
+        self.user_color_input.setFixedWidth(80)
         
         btn_pick_user = QPushButton("Pick")
         btn_pick_user.clicked.connect(lambda: self.pick_color(self.user_color_input))
         
-        form_layout.addWidget(QLabel("User Text:"), 0, 0)
-        form_layout.addWidget(self.user_color_input, 0, 1)
-        form_layout.addWidget(btn_pick_user, 0, 2)
+        grid.addWidget(QLabel("User Text:"), 0, 0)
+        grid.addWidget(self.user_color_input, 0, 1)
+        grid.addWidget(btn_pick_user, 0, 2)
 
         # AI Color
         self.ai_color_input = QLineEdit()
         self.ai_color_input.setText(self.settings_manager.get_chat_ai_color())
         self.ai_color_input.setPlaceholderText("#ff9900")
+        self.ai_color_input.setFixedWidth(80)
         
         btn_pick_ai = QPushButton("Pick")
         btn_pick_ai.clicked.connect(lambda: self.pick_color(self.ai_color_input))
         
-        form_layout.addWidget(QLabel("AI Text:"), 1, 0)
-        form_layout.addWidget(self.ai_color_input, 1, 1)
-        form_layout.addWidget(btn_pick_ai, 1, 2)
+        grid.addWidget(QLabel("AI Text:"), 0, 3) # Same row, next columns
+        grid.addWidget(self.ai_color_input, 0, 4)
+        grid.addWidget(btn_pick_ai, 0, 5)
 
-        form_group.setLayout(form_layout)
-        layout.addWidget(form_group)
+        layout.addLayout(grid)
         layout.addStretch()
         
-        return page
+        group.setLayout(layout)
+        return group
 
     def pick_color(self, line_edit):
         from PySide6.QtWidgets import QColorDialog

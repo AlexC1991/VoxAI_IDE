@@ -39,6 +39,9 @@ class MessageItem(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         
+        self.role = role
+        self.original_text = text # Store original text for re-formatting
+        
         from core.settings import SettingsManager
         self.settings_manager = SettingsManager()
         
@@ -144,8 +147,43 @@ class MessageItem(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet(f"MessageItem {{ background: transparent; border: none; }}")
 
+    def update_appearance(self):
+        """Refreshes colors from settings."""
+        user_color = self.settings_manager.get_chat_user_color()
+        ai_color = self.settings_manager.get_chat_ai_color()
+        
+        role_lower = self.role.lower()
+        if role_lower == "user":
+            color = user_color
+        elif role_lower in ("ai", "assistant"):
+            color = ai_color
+        elif role_lower == "tool":
+            color = "#4ec9b0" # _C_ACCENT
+        else:
+            color = "#555555"
+            
+        self.current_color = color
+        
+        # Update Role Label
+        self.role_label.setStyleSheet(
+            f"color: {color}; font-family: Consolas, monospace; font-size: 11px; "
+            f"font-weight: bold; background: transparent; padding: 0; margin: 0; "
+            f"text-transform: uppercase; letter-spacing: 0.5px;"
+        )
+        
+        # Update Container Border (if AI)
+        if role_lower in ("ai", "assistant"):
+            self.item_container.setStyleSheet(f"border-left: 2px solid {ai_color}; margin-left: 4px; padding-left: 10px;")
+            
+        # Update Content
+        # We need to re-render the text with the new color
+        # Ideally we stored the original text? Yes, added self.original_text
+        if hasattr(self, 'original_text'):
+            self.set_text(self.original_text)
+
     def set_text(self, text: str):
         """Updates the message content text and re-formats it."""
+        self.original_text = text
         formatted = self._format(text, self.current_color)
         self.content_label.setText(formatted)
 

@@ -653,6 +653,19 @@ class ChatPanel(QWidget):
                 self.model_combo.setCurrentIndex(0)
                 self.settings_manager.set_selected_model(self.model_combo.currentText())
 
+    def refresh_appearance(self):
+        """Reloads settings and updates all chat items."""
+        # Update existing items
+        count = self.chat_layout.count()
+        for i in range(count):
+            item = self.chat_layout.itemAt(i)
+            widget = item.widget()
+            if widget and hasattr(widget, 'update_appearance'):
+                widget.update_appearance()
+        
+        # Force redraw
+        self.chat_content.update()
+
     def on_model_changed(self, text):
         if text and text.strip():
             self.settings_manager.set_selected_model(text.strip())
@@ -1000,8 +1013,7 @@ CRITICAL: AFTER completing a phase or if you need to plan, STOP generating tool 
         if tools:
             self._start_tool_execution(tools)
         else:
-            self.is_processing = False
-            self.send_btn.setEnabled(True)
+            self._reset_send_button()
 
     def _start_tool_execution(self, tools):
         # 1. Log visualization

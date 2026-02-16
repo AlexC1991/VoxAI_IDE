@@ -391,7 +391,13 @@ class CodingAgentIDE(QMainWindow):
 
         dlg = SettingsDialog(self)
         if dlg.exec():
-            self.refresh_models()
+            # Refresh models in chat panel
+            if hasattr(self, 'chat_panel'):
+                self.chat_panel.refresh_models()
+                self.chat_panel.refresh_appearance()
+            
+            # TODO: Trigger appearance update if needed
+            # self.chat_panel.refresh_appearance()
 
     # ------------------------------------------------------------------
     # Menu bar
