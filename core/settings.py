@@ -72,11 +72,7 @@ class SettingsManager:
     # -----------------------------
     # RAG / Vector engine settings
     # -----------------------------
-    def get_vector_engine_url(self):
-        return self.settings.value("urls/vector_engine", "http://127.0.0.1:8091")
 
-    def set_vector_engine_url(self, url: str):
-        self.settings.setValue("urls/vector_engine", (url or "").strip())
 
     def get_rag_enabled(self) -> bool:
         val = self.settings.value("rag/enabled", True)

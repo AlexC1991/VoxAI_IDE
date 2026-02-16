@@ -29,7 +29,7 @@ class RAGClient:
     Local RAG client that talks to the Vox_AISearch Go vector engine over localhost.
     """
 
-    def __init__(self, vector_engine_url: Optional[str] = None):
+    def __init__(self):
         self.settings = SettingsManager()
         self.ai = AIClient()
         

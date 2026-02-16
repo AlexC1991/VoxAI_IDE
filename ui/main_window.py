@@ -538,10 +538,34 @@ class CodingAgentIDE(QMainWindow):
             QMessageBox.critical(self, "Save Failed", f"Could not save file:\n{e}")
 
     def show_about(self):
-        QMessageBox.information(
+        about_text = (
+            "<h3>VoxAI Coding Agent IDE</h3>"
+            "<p><b>Version:</b> 1.7 Agentic</p>"
+            "<hr>"
+            "<h4>⚡ Local Models (GGUF)</h4>"
+            "<p>VoxAI supports running LLMs entirely offline using the <b>GGUF</b> format. "
+            "To use a local model:</p>"
+            "<ol>"
+            "<li>Download a <code>.gguf</code> model file (e.g., Llama-3, Mistral, Gemma).</li>"
+            "<li>Place it in the <code>/models/llm/</code> directory.</li>"
+            "<li>It will automatically appear in the <b>Model Selection</b> list.</li>"
+            "</ol>"
+            "<p><i>Local models run 100% on your machine with zero data leakage. Performance depends on your CPU/GPU.</i></p>"
+            "<br>"
+            "<h4>🌐 Providers</h4>"
+            "<p>You can also connect to powerful cloud APIs for complex tasks:</p>"
+            "<ul>"
+            "<li><b>OpenAI / Anthropic / Google:</b> Industry standard models.</li>"
+            "<li><b>OpenRouter:</b> Access to DeepSeek, Qwen, and others via a single key.</li>"
+            "</ul>"
+            "<hr>"
+            "<p><i>Built for the Vibe-Coder.</i></p>"
+        )
+
+        QMessageBox.about(
             self,
             "About VoxAI Coding Agent IDE",
-            "VoxAI Coding Agent IDE\n\nLocal-first autonomous coding agent with native subprocess execution.",
+            about_text,
         )
 
     # ------------------------------------------------------------------

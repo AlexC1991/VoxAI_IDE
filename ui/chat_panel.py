@@ -17,6 +17,7 @@ from core.ai_client import AIClient
 from core.rag_client import RAGClient
 from core.code_parser import CodeParser
 from core.agent_tools import AgentToolHandler, get_resource_path
+from core.prompts import SystemPrompts
 from ui.widgets.chat_items import MessageItem, ProgressItem
 
 log = logging.getLogger(__name__)
@@ -817,13 +818,25 @@ class ChatPanel(QWidget):
     def _start_ai_worker(self, user_text=None, attachments=None):
         if attachments is None: attachments = []
         
-        # Construct history
-        history_to_send = [{"role": "system", "content": self.system_prompt}]
+        # Select System Prompt based on Model Type
+        is_local = "Local" in self.model_combo.currentText()
+        
+        if is_local:
+            base_prompt = SystemPrompts.CODING_AGENT_LITE
+            # Extra Safety Latch for Local Models
+            if user_text and len(user_text) < 10 and "hey" in user_text.lower():
+                 base_prompt += "\nUSER SAID: '{user_text}'. THIS IS A GREETING. DO NOT USE TOOLS. JUST SAY HELLO."
+        else:
+            base_prompt = self.system_prompt # Default full prompt
+
+        history_to_send = [{"role": "system", "content": base_prompt}]
 
         # Inject Mode-Specific Prompt
+        # SKIP complicated mode prompts for Local/Small models to prevent confusion
         current_mode = self.mode_combo.currentText()
-        if "Siege Mode" in current_mode:
-            siege_prompt = """
+        if not is_local:
+            if "Siege Mode" in current_mode:
+                siege_prompt = """
 COMMAND & CONTROL: MODE 2 (SIEGE MODE / FULL AUTO)
 AUTHORIZATION GRANTED: "GO LIMITLESS"
 1. Bypass phase-gates.
@@ -831,16 +844,16 @@ AUTHORIZATION GRANTED: "GO LIMITLESS"
 3. If tools fail, analyze specific errors, patch the code, and retry immediately.
 4. DO NOT STOP until the task is complete.
 """
-            history_to_send.append({"role": "system", "content": siege_prompt})
-        else:
-            phased_prompt = """
+                history_to_send.append({"role": "system", "content": siege_prompt})
+            else:
+                phased_prompt = """
 COMMAND & CONTROL: MODE 1 (PHASED STRATEGIC ALIGNMENT)
 1. Draft: Analyze the request. Plan phases.
 2. Authorize: Stop and wait for approval before executing a new phase.
 3. Execute: Perform the phase.
 CRITICAL: AFTER completing a phase or if you need to plan, STOP generating tool calls. Return text only.
 """
-            history_to_send.append({"role": "system", "content": phased_prompt})
+                history_to_send.append({"role": "system", "content": phased_prompt})
         
         limit = self.settings_manager.get_max_history_messages()
         recent_msgs = self.messages[-limit:] if len(self.messages) > limit else self.messages

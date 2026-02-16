@@ -337,7 +337,6 @@ class AIClient:
 
                 # Hardware config (reuse from hardware.py or defaults)
                 # For now, safe defaults or minimal config
-                # TODO: Integrate with hardware.py for full acceleration
                 
                 log.info(f"Loading local model: {model_path}")
                 # We should probably cache this instance in a singleton manager to avoid reload lag

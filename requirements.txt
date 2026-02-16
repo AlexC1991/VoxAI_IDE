@@ -1,3 +1,5 @@
 PySide6
 openai
 pygments
+requests
+llama-cpp-python

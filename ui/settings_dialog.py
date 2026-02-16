@@ -63,7 +63,6 @@ class SettingsDialog(QDialog):
             ("kimi", "Kimi (Moonshot)", "kimi", ["moonshot-v1-8k", "moonshot-v1-32k"]),
             ("zai", "Z.ai (Zhipu)", "zai", ["glm-4", "glm-3-turbo"]),
             ("openrouter", "OpenRouter", "openrouter", ["openrouter/auto"]),
-            ("local", "Local LLM (Ollama)", "local", []),
         ]
 
         layout = QVBoxLayout(self)
@@ -83,15 +82,11 @@ class SettingsDialog(QDialog):
 
         self.rag_enabled = QCheckBox("Enable RAG (retrieve relevant code/files for the agent)")
         self.rag_enabled.setChecked(self.settings_manager.get_rag_enabled())
+        self.rag_enabled.setToolTip("If enabled, the AI will search your project for code relevant to your query.")
         left.addWidget(self.rag_enabled)
 
-        url_row = QHBoxLayout()
-        url_row.addWidget(QLabel("Vector Engine URL:"))
-        self.vector_url = QLineEdit()
-        self.vector_url.setText(self.settings_manager.get_vector_engine_url())
-        self.vector_url.setPlaceholderText("http://127.0.0.1:8080")
-        url_row.addWidget(self.vector_url, 1)
-        left.addLayout(url_row)
+        # URL Config removed (Native Local Engine only)
+
 
         # Top-k
         topk_row = QHBoxLayout()
@@ -100,6 +95,11 @@ class SettingsDialog(QDialog):
         self.rag_top_k.setRange(1, 50)
         self.rag_top_k.setValue(self.settings_manager.get_rag_top_k())
         self.rag_top_k.setFixedWidth(90)
+        self.rag_top_k.setToolTip(
+            "Values: 1-50 (Default: 5). Controls how many 'memory chunks' the AI retrieves.\n"
+            "Higher = More context but slower.\n"
+            "Lower = Faster but might miss details."
+        )
         topk_row.addWidget(self.rag_top_k)
         topk_row.addStretch()
         left.addLayout(topk_row)
@@ -113,22 +113,19 @@ class SettingsDialog(QDialog):
         self.rag_min_score.setDecimals(2)
         self.rag_min_score.setValue(self.settings_manager.get_rag_min_score())
         self.rag_min_score.setFixedWidth(90)
+        self.rag_min_score.setToolTip(
+            "Values: 0.00-1.00 (Default: 0.00). Strictness filter for memory retrieval.\n"
+            "0.00 = Loose (Show best matches even if weak).\n"
+            "0.50+ = Strict (Only show very strong matches)."
+        )
         minscore_row.addWidget(self.rag_min_score)
         minscore_row.addStretch()
         left.addLayout(minscore_row)
 
         # Embedding Model selection removed as it is now hardcoded to the native RIG system.
-
-        # Quick hint + placeholder test button (we’ll wire a real ping once the client exists)
-        hint = QLabel("Tip: Start the Go server first, then set URL here (e.g. http://127.0.0.1:8080).")
-        hint.setStyleSheet("color: #9aa0a6;")
-        left.addWidget(hint)
-
-        self.rag_test_btn = QPushButton("Test Connection")
-        self.rag_test_btn.setFixedWidth(150)
-        self.rag_test_btn.clicked.connect(self.test_vector_engine_connection)
+        
+        # Connection test removed (Internal Engine)
         right.addStretch()
-        right.addWidget(self.rag_test_btn, alignment=Qt.AlignRight)
 
         layout.addWidget(rag_group)
 
@@ -418,52 +415,13 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, "Fetch Failed", "Could not fetch models. Check API Key or Network.")
 
-    def test_vector_engine_connection(self):
-        """
-        Minimal connection test (no dependency on server implementing a dedicated /health endpoint).
-        We just try a GET / (or /health) and accept any HTTP response as "reachable".
-        """
-        import urllib.request
 
-        base = (self.vector_url.text() or "").strip()
-        if not base:
-            QMessageBox.warning(self, "Missing URL", "Please enter the Vector Engine URL first.")
-            return
-
-        # Try a couple of likely endpoints
-        candidates = [base.rstrip("/") + "/health", base.rstrip("/") + "/"]
-        last_err = None
-
-        self.rag_test_btn.setEnabled(False)
-        self.rag_test_btn.setText("Testing...")
-
-        try:
-            for url in candidates:
-                try:
-                    req = urllib.request.Request(url, method="GET")
-                    with urllib.request.urlopen(req, timeout=2) as resp:
-                        QMessageBox.information(
-                            self,
-                            "Vector Engine",
-                            f"Connection OK.\n\nURL: {base}\nHTTP: {resp.status}",
-                        )
-                        return
-                except Exception as e:
-                    last_err = e
-
-            QMessageBox.warning(
-                self,
-                "Vector Engine",
-                f"Could not connect to:\n{base}\n\nError:\n{last_err}",
-            )
-        finally:
-            self.rag_test_btn.setEnabled(True)
-            self.rag_test_btn.setText("Test Connection")
 
     def save_settings(self):
         # Save RAG settings
         self.settings_manager.set_rag_enabled(self.rag_enabled.isChecked())
-        self.settings_manager.set_vector_engine_url(self.vector_url.text().strip())
+        # Vector Engine URL is hardcoded/internal now.
+
         self.settings_manager.set_rag_top_k(self.rag_top_k.value())
         self.settings_manager.set_rag_min_score(self.rag_min_score.value())
         self.settings_manager.set_rag_min_score(self.rag_min_score.value())
