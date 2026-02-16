@@ -113,6 +113,7 @@ class CodeEditor(QPlainTextEdit):
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 13px;
                 border: none;
+                padding: 5px; /* Added padding */
             }
         """)
         self.highlighter = None # Set later based on file type
@@ -195,19 +196,46 @@ class EditorPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
-        # Tab Styling
         self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #3E3E42; top: -1px; }
+            QTabWidget::pane {
+                border-top: 1px solid #27272a; /* Subtler separator */
+                background: #18181b; 
+                position: absolute;
+                top: -1px;
+            }
             QTabBar::tab {
-                background: #2D2D30;
-                color: #999;
-                padding: 5px 10px;
-                border: 1px solid #1E1E1E;
+                background: #18181b; 
+                color: #a1a1aa;
+                padding: 6px 12px;
+                min-width: 60px;
+                max-width: 180px;
+                border-bottom: none;
+                border-top: 2px solid transparent; 
+                margin-right: -1px; /* Overlap borders */
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 11px;
+                font-weight: 500;
             }
             QTabBar::tab:selected {
-                background: #1E1E1E;
-                color: #DDD;
-                border-bottom: 2px solid #007ACC;
+                background: #27272a;
+                color: #00f3ff; /* Electric Blue Text */
+                border-top: 2px solid #ff9900; /* Neon Orange Top Border */
+                font-weight: 600;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #232326;
+                color: #e4e4e7;
+                border-top: 2px solid #3f3f46;
+            }
+            QTabBar::close-button {
+                image: url(resources/close_tab.png);
+                subcontrol-position: right;
+                padding: 2px;
+                margin-right: 4px;
+            }
+            QTabBar::close-button:hover {
+                background: #ef4444; 
+                border-radius: 3px;
             }
         """)
         self.layout.addWidget(self.tabs)

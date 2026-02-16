@@ -1,9 +1,16 @@
+
 import sys
 import traceback
 from ui.main_window import CodingAgentIDE
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ui.crash_reporter import show_crash_dialog
+
+# Ensure stdout/stderr handle UTF-8 (important for emojis on Windows)
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
 
 
 def handle_exception(exc_type, exc_value, exc_traceback):

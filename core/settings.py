@@ -155,3 +155,32 @@ class SettingsManager:
 
     def set_last_project_path(self, path):
         self.settings.setValue("project/path", path)
+
+    def get_max_history_messages(self) -> int:
+        return int(self.settings.value("context/max_history_messages", 10))
+
+    def get_max_file_list(self) -> int:
+        return int(self.settings.value("context/max_file_list", 50))
+
+    def get_rag_max_context(self) -> int:
+        return int(self.settings.value("rag/max_context_chars", 4000))
+
+    def get_rag_max_chunk(self) -> int:
+        return int(self.settings.value("rag/max_chunk_chars", 1000))
+
+    # -----------------------------
+    # Chat Appearance Settings
+    # -----------------------------
+    def get_chat_user_color(self) -> str:
+        # Force Neon Orange for maximum visibility
+        return "#ff9900" 
+
+    def set_chat_user_color(self, color: str):
+        self.settings.setValue("appearance/chat_user_color", color)
+
+    def get_chat_ai_color(self) -> str:
+        # Force Neon Blue for maximum visibility
+        return "#00f3ff"
+
+    def set_chat_ai_color(self, color: str):
+        self.settings.setValue("appearance/chat_ai_color", color)

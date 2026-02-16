@@ -1,9 +1,11 @@
+
 """Chat display widgets — Claude Code inspired inline terminal style."""
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QSizePolicy,
+    QGraphicsDropShadowEffect, QFrame
 )
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QPoint
 import html as html_mod
 import re
 import logging
@@ -14,8 +16,8 @@ log = logging.getLogger(__name__)
 # Colours (VS Code Dark Theme)
 # ---------------------------------------------------------------------------
 _C_BG        = "#1e1e1e"   # VS Code Main Background
-_C_USER      = "#d4d4d8"   # Light Gray (Zinc-300)
-_C_AI        = "#cccccc"   # Standard Gray
+_C_USER      = "#ff9900"   # Neon Orange
+_C_AI        = "#00f3ff"   # Neon Blue
 _C_SYSTEM    = "#858585"   # Dimmed Gray
 _C_DIM       = "#6e6e6e"   # Darker Gray
 _C_ACCENT    = "#4ec9b0"   # Teal-ish
@@ -36,32 +38,72 @@ class MessageItem(QWidget):
     def __init__(self, role: str, text: str, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        
+        from core.settings import SettingsManager
+        self.settings_manager = SettingsManager()
+        
+        # Load dynamic colors
+        user_color = self.settings_manager.get_chat_user_color()
+        ai_color = self.settings_manager.get_chat_ai_color()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
-        layout.setSpacing(2)
+        layout.setContentsMargins(4, 6, 4, 6) # Narrower to allow indicator to be edge-aligned
+        layout.setSpacing(4)
 
         # --- Role header ---
         role_lower = role.lower()
         if role_lower == "user":
             prefix = "> "
             role_name = "You"
-            color = _C_USER
+            color = user_color
         elif role_lower in ("ai", "assistant"):
             prefix = ""
             role_name = "VoxAI"
-            color = _C_AI
+            color = ai_color
         else:
             prefix = ""
             role_name = "System"
-            color = _C_SYSTEM
+            color = "#555555" # Dimmed system color
+        
+        self.current_color = color # Store for set_text updates
+        
+        # Add AI border if role is AI
+        is_ai = role_lower in ("ai", "assistant")
+        is_system = role_lower == "system"
+        is_project_switch = is_system and "switched project to" in text.lower()
 
         self.role_label = QLabel(f"{prefix}{role_name}")
         self.role_label.setStyleSheet(
-            f"color: {color}; font-family: {_FONT_MONO}; font-size: 12px; "
-            f"font-weight: bold; background: transparent; padding: 0; margin: 0;"
+            f"color: {color}; font-family: {_FONT_MONO}; font-size: 11px; "
+            f"font-weight: bold; background: transparent; padding: 0; margin: 0; "
+            f"text-transform: uppercase; letter-spacing: 0.5px;"
         )
-        layout.addWidget(self.role_label)
+        if is_system:
+            self.role_label.setStyleSheet(self.role_label.styleSheet() + "font-size: 11px; text-transform: uppercase;")
+
+        # Remove graphics effect for a cleaner "Claude code" look
+        self.role_label.setGraphicsEffect(None)
+        
+        # Wrapper for optional AI border
+        self.item_container = QFrame()
+        self.container_layout = QVBoxLayout(self.item_container)
+        self.container_layout.setContentsMargins(0, 0, 0, 0) # Use padding in CSS for the border offset
+        self.container_layout.setSpacing(4)
+        
+        if is_ai:
+            self.item_container.setStyleSheet(f"border-left: 2px solid {_C_AI}; margin-left: 4px; padding-left: 10px;")
+        else:
+            self.item_container.setStyleSheet("border: none; margin-left: 0; padding-left: 0;")
+        
+        if is_project_switch:
+            # Add a separator line for project switches
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Plain)
+            line.setStyleSheet(f"background-color: #333333; margin: 10px 0;")
+            layout.addWidget(line)
+
+        self.container_layout.addWidget(self.role_label)
 
         # --- Content ---
         self.content_label = QLabel()
@@ -70,20 +112,54 @@ class MessageItem(QWidget):
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.content_label.setOpenExternalLinks(True)
         self.content_label.setStyleSheet(
-            f"color: {_C_AI}; font-family: {_FONT_MONO}; font-size: 13px; "
+            f"color: {color}; font-family: {_FONT_MONO}; font-size: 12px; "
             f"background: transparent; padding: 2px 0 0 0; margin: 0; "
-            f"line-height: 1.5;"
+            f"line-height: 1.4;"
         )
 
-        formatted = self._format(text)
+        # Remove graphics effect for a cleaner "Claude code" look
+        self.content_label.setGraphicsEffect(None)
+        
+        formatted = self._format(text, color) # Pass color to helper
         self.content_label.setText(formatted)
-        layout.addWidget(self.content_label)
+        self.container_layout.addWidget(self.content_label)
+
+        # Add container to main layout
+        layout.addWidget(self.item_container)
+
+        # --- Footer (Usage Stats) ---
+        self.footer_label = QLabel()
+        self.footer_label.setStyleSheet(
+            f"color: {_C_DIM}; font-family: {_FONT_MONO}; font-size: 10px; "
+            f"background: transparent; padding-top: 4px;"
+        )
+        self.footer_label.hide() # Hidden by default
+        self.container_layout.addWidget(self.footer_label)
 
         # Widget-level style (flat, no border)
-        self.setStyleSheet(f"MessageItem {{ background: transparent; }}")
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet(f"MessageItem {{ background: transparent; border: none; }}")
+
+    def set_text(self, text: str):
+        """Updates the message content text and re-formats it."""
+        formatted = self._format(text, self.current_color)
+        self.content_label.setText(formatted)
+
+    def set_usage(self, usage: dict):
+        """Sets usage stats from dict: {'prompt_tokens', 'completion_tokens', 'total_tokens'}"""
+        if not usage:
+            return
+        
+        prompt = usage.get("prompt_tokens", 0)
+        completion = usage.get("completion_tokens", 0)
+        total = usage.get("total_tokens", 0)
+        
+        text = f"Tokens: {total} (Prompt: {prompt} | Output: {completion})"
+        self.footer_label.setText(text)
+        self.footer_label.show()
 
     # ---- Formatting helpers ----
-    def _format(self, text: str) -> str:
+    def _format(self, text: str, main_color: str) -> str:
         """Convert markdown-ish text to simple HTML (code blocks highlighted)."""
         if not text:
             return ""
@@ -95,7 +171,7 @@ class MessageItem(QWidget):
             if part.startswith("```") and part.endswith("```"):
                 result += self._render_code_block(part)
             else:
-                result += self._render_text(part)
+                result += self._render_text(part, main_color)
         return result
 
     def _render_code_block(self, block: str) -> str:
@@ -137,7 +213,7 @@ class MessageItem(QWidget):
                 f'{escaped}</pre>'
             )
 
-    def _render_text(self, text: str) -> str:
+    def _render_text(self, text: str, color: str) -> str:
         safe = html_mod.escape(text)
         # Bold
         safe = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe)
@@ -149,8 +225,8 @@ class MessageItem(QWidget):
         # Newlines
         safe = safe.replace('\n', '<br>')
         return (
-            f'<span style="color:{_C_AI}; font-family:{_FONT_MONO}; '
-            f'font-size:13px;">{safe}</span>'
+            f'<span style="color:{color}; font-family:{_FONT_MONO}; '
+            f'font-size: 13px;">{safe}</span>'
         )
 
 
@@ -217,7 +293,8 @@ class ProgressItem(QWidget):
         )
         layout.addWidget(self.status_label)
 
-        self.setStyleSheet("ProgressItem { background: transparent; }")
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("ProgressItem { background: transparent; border: none; }")
 
     def _toggle_thought(self):
         expanded = self.thought_expander.isChecked()

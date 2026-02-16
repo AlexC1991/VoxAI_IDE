@@ -1,4 +1,4 @@
-# VoxAI Coding Agent IDE
+# VoxAI Coding Agent IDE: The Vibe-Coder's Powerhouse
 
 ```
 ██╗   ██╗ ██████╗       █████╗ ██╗    ██╗██████╗ ███████╗
@@ -11,131 +11,87 @@
 
 ---
 
-![Version](https://img.shields.io/badge/Version-1.2%20Dark%20Mode-blue?style=flat-square) ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square) ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Mac-lightgrey?style=flat-square) ![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.5%20Agentic-cyan?style=for-the-badge) ![Status](https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge) ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?style=for-the-badge)
 
-## 🎯 What This Is (And Isn’t)
-
-**This is:**
-- A **local-first** autonomous coding agent.
-- A **real execution environment** (subprocess, not sandboxed).
-- A **developer-controlled** AI workflow loop.
-- **New**: Multi-Provider Support (OpenAI, Gemini, Anthropic, DeepSeek, etc.) with tabbed configuration.
-- **New**: Features a polished **VS Code Dark** theme and compact chat interface.
-
-**This is not:**
-- A browser-based coding chatbot.
-- A cloud-only dev agent.
-- A locked-down virtual container.
-
-The **Coding Agent IDE** integrates into the VoxAI Orchestrator as an intelligent pair programmer. You direct intent, and the AI handles implementation, debugging, and execution on your local machine.
+**VoxAI IDE** is not just an editor; it's a **local-first autonomous execution core**. It is purpose-built for the "vibe coder"—the developer who directs high-level architectural intent and lets a specialized AI agent handle the heavy lifting of implementation, debugging, and terminal-level execution.
 
 ---
 
-## 🏗️ Core Philosophy
+## � Why VoxAI? (The Vibe-Coder Advantage)
 
-**Director & Engineer Workflow**
-Instead of abstract "AI coding," this IDE enforces a strict role division:
-1.  **You (The Director)**: Define the high-level goal (e.g., *"Create a fast API for user login"*).
-2.  **AI (The Engineer)**: Writes the code, handles imports, and structures the project.
-3.  **System**: Runs the code natively on your machine.
-4.  **Feedback Loop**: If it breaks, the error output is automatically fed back to the AI for immediate patching.
+Standard AI editors suggest code; **VoxAI builds software**.
 
----
-
-## � Example Workflow
-
-**Prompt:** *"Build a small Flask API with user login and SQLite storage."*
-
-1.  **Step 1 — AI Generates**:
-    - `main.py`
-    - `models.py`
-    - `requirements.txt`
-2.  **Step 2 — You Press Run**:
-    - Script executes locally via subprocess.
-    - **Debug Drawer** slides open automatically.
-3.  **Step 3 — Error Appears**:
-    - *Error: Missing dependency 'flask_sqlalchemy'.*
-    - `stderr` is auto-fed back to the agent.
-4.  **Step 4 — AI Patches**:
-    - Updates `requirements.txt`.
-    - Refactors imports.
-5.  **Step 5 — Run Again**:
-    - **Exit Code 0**.
-    - Debug Drawer retracts.
-
-*Result:* A working local API project in under 2 minutes.
+- **🛠️ Zero-Context Implementation**: With Deep RAG integration, VoxAI understands your entire project better than you do. It searches your local codebase, cross-references logic, and generates code that actually *fits*.
+- **⚡ The self-Healing Loop**: When code fails, VoxAI doesn't just show an error. It captures `stderr`, analyzes the traceback, and **patches itself** in a continuous loop until the task is complete. 
+- **�️ Native Terminal Authority**: The agent has full access to your local shell. It can install dependencies, migrate databases, and run test suites natively on your machine, not in a sandbox.
+- **🧠 Thought Transparency**: Every tool call, file read, and command execution is visualized. You see the AI's "Thought" process as it happens, allowing for precise steering.
 
 ---
 
-## 🔒 Safety & Scope
+## 🏗️ Technical Deep-Dive
 
-- **Project Scoped**: The agent operates **only** inside the user-selected project directory.
-- **No Hidden Execution**: All commands are visible in the Debug Drawer.
-- **Manual Override**: You retain full control to edit files or stop processes at any time.
-- **Local First**: Your code stays on your machine (unless using a cloud LLM provider).
+### 🧠 Agentic Core & RAG
+- **Semantic Memory**: Uses `llama-cpp-python` to generate local vector embeddings of your files. A high-speed Go-based search engine provides sub-millisecond similarity retrieval.
+- **XML Tool Protocol**: Uses a strict, low-latency XML messaging protocol to control the filesystem. This minimizes "hallucination" by forcing the AI to use structured commands for all actions.
+- **Multimodal Context**: Injects image payloads directly into the LLM context window, enabling visual debugging of UI components and architectural diagrams.
 
----
-
-## 🖥️ Workspace Layout
-
-**Three-Pane Coding Deck**:
-
-1.  **Coding Agent (Left Panel)**:
-    - **Thought Process**: Hidden by default. Expand to see the AI's reasoning plan before it acts.
-    - **Progress Updates**: Tracks file creation/edits in real-time.
-2.  **Script Viewer (Top Right)**:
-    - Real-time syntax-highlighted editor.
-    - Dynamic tabs for multi-file projects.
-3.  **Directory Tree (Bottom Right)**:
-    - Live view of your project sandbox.
-4.  **Debug Drawer (Slide-Over)**:
-    - Slides in during execution.
-    - Auto-retracts on success.
-    - Staying open on error for debugging.
+### 🚀 Performance Architecture
+- **Multi-Threaded Execution**: Separate threads for AI inference, tool execution, and UI rendering ensure zero-lag operation, even during heavy file indexing.
+- **Subprocess Streaming**: Real-time pipe buffering allows the IDE to capture and stream `stdout/stderr` character-by-character, simulating a high-speed terminal experience.
 
 ---
 
-## 🚀 Execution Model
+## ⚖ Comparison: Agentic vs. Standard AI
 
-> **Native Subprocess Execution**
-
-The IDE executes code directly on your host machine using your installed runtimes.
-- **No Docker Overhead**: Uses your system's Python/Node/Go.
-- **Live Streams**: `stdout` and `stderr` stream directly to the Debug Drawer.
-- **Signal Control**: Stop button sends `SIGTERM` to the process tree.
-
----
-
-## ⚖ Why Use This Instead of a Standard AI Editor?
-
-| Feature | VoxAI Coding Agent IDE | Typical AI Code Tool |
+| Feature | VoxAI (Agentic IDE) | Traditional AI Editors |
 | :--- | :--- | :--- |
-| **Local Execution** | ✅ Native (Subprocess) | ❌ Often Sandboxed/Cloud |
-| **Self-Healing Loop** | ✅ Built-in (Error -> Fix) | ❌ Manual Copy-Paste |
-| **Directory Scope** | ✅ Explicit Project Sandbox | ⚠️ Varies |
-| **Manual Override** | ✅ Full Editor Control | ⚠️ Partial / Diff Only |
-| **Model Flexibility** | ✅ Cloud + Local (Ollama) | ❌ Often Cloud-Only |
+| **Logic Loop** | ✅ Self-Heals (Error -> Feedback) | ❌ Manual Copy-Paste |
+| **Execution** | ✅ Native Shell / Subprocess | ❌ Suggestion Only |
+| **Memory** | ✅ Full-Project RAG Context | ⚠️ File-by-File / Limited |
+| **Workflow** | ✅ Directed Intent | ⚠️ Line-by-Line Autocomplete |
+| **UI** | ✅ Focused Agentic View | ❌ Standard Multi-Pane |
 
 ---
 
-## 📦 Installation & Setup
+## �️ Command & Control (Governance)
 
-1.  **Install Dependencies**
-    ```bat
-    setup_integration.bat
+VoxAI is powerful by default, but you hold the keys. The system operates in two distinct modes depending on your risk tolerance and project maturity.
+
+### 🛑 Mode 1: Phased Strategic Alignment (Default)
+The AI doesn't just start hacking; it acts as a Senior Architect first.
+1.  **Draft:** The AI analyzes the request and presents a **Phased Execution Plan** (e.g., *Phase 1: Dependency Install*, *Phase 2: Database Migration*, *Phase 3: Controller Logic*).
+2.  **Authorize:** You review the plan. The AI **pauses** at the start of each phase.
+3.  **Execute:** You grant specific authorization (`[Y/n]`) to proceed. The AI executes that phase and reports back.
+
+### 🔥 Mode 2: "Siege Mode" (Full Auto)
+For when you need speed and trust the machine.
+* **The Protocol:** You explicitly authorize the agent to **"Go Limitless."**
+* **The Result:** The AI bypasses all phase-gates. It will iterate, debug, patch, and execute continuously until the objective is met.
+* **The Sandbox (Safety Lock):** 
+    * **Write Access:** Strictly confined to the *Active Project Directory*. The AI cannot modify system files or other projects.
+    * **Read Access:** Global. If you tell the AI *"Make it like ../other_project"*, it can read that external directory for context, but it can never change it.
+* *Warning: Autonomous execution active. Rapid file mutations will occur within the project root.*
+
+---
+
+## �📦 Getting Started
+
+1.  **Initialize Environment**
+    ```powershell
+    ./setup_integration.bat
     ```
 
-2.  **Configure Secrets**
-    ```bat
-    copy keys\secrets.template.json keys\secrets.json
-    notepad keys\secrets.json
+2.  **Add Secrets**
+    ```powershell
+    # Supports OpenAI, Anthropic, Gemini, DeepSeek & Ollama
+    cp keys/secrets.template.json keys/secrets.json
     ```
 
-3.  **Launch**
-    ```bat
-    start_IDE.bat
+3.  **Boot System**
+    ```powershell
+    ./start_IDE.bat
     ```
 
 ---
 
-**VoxAI Orchestrator** • *Building the future of Autonomous Coding*
+**VoxAI** • *The Command Center for Autonomous Development*

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QSpinBox,
     QDoubleSpinBox,
+    QGridLayout,
 )
 from PySide6.QtCore import Qt
 from core.settings import SettingsManager
@@ -158,6 +159,13 @@ class SettingsDialog(QDialog):
             self.setup_provider_page(page, p_id, p_name, p_key_name, p_defaults)
             self.stack.addWidget(page)
 
+        # Add Appearance Tab (Index = len(providers))
+        self.appearance_page = self.setup_appearance_tab()
+        self.stack.addWidget(self.appearance_page)
+        
+        # Add entry to combobox
+        self.provider_combo.addItem("Appearance")
+
         # Global buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -269,6 +277,58 @@ class SettingsDialog(QDialog):
         }
 
         self.populate_lists(p_id, p_name, p_defaults, available_list, selected_list)
+
+    def setup_appearance_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # -- Description --
+        desc = QLabel("Customize the visual appearance of the chat interface.")
+        desc.setStyleSheet("color: #a1a1aa; font-style: italic;")
+        layout.addWidget(desc)
+
+        # -- Colors Form --
+        form_group = QGroupBox("Chat Colors")
+        form_layout = QGridLayout()
+        form_layout.setSpacing(10)
+
+        # User Color
+        self.user_color_input = QLineEdit()
+        self.user_color_input.setText(self.settings_manager.get_chat_user_color())
+        self.user_color_input.setPlaceholderText("#d4d4d8")
+        
+        btn_pick_user = QPushButton("Pick")
+        btn_pick_user.clicked.connect(lambda: self.pick_color(self.user_color_input))
+        
+        form_layout.addWidget(QLabel("User Text:"), 0, 0)
+        form_layout.addWidget(self.user_color_input, 0, 1)
+        form_layout.addWidget(btn_pick_user, 0, 2)
+
+        # AI Color
+        self.ai_color_input = QLineEdit()
+        self.ai_color_input.setText(self.settings_manager.get_chat_ai_color())
+        self.ai_color_input.setPlaceholderText("#ff9900")
+        
+        btn_pick_ai = QPushButton("Pick")
+        btn_pick_ai.clicked.connect(lambda: self.pick_color(self.ai_color_input))
+        
+        form_layout.addWidget(QLabel("AI Text:"), 1, 0)
+        form_layout.addWidget(self.ai_color_input, 1, 1)
+        form_layout.addWidget(btn_pick_ai, 1, 2)
+
+        form_group.setLayout(form_layout)
+        layout.addWidget(form_group)
+        layout.addStretch()
+        
+        return page
+
+    def pick_color(self, line_edit):
+        from PySide6.QtWidgets import QColorDialog
+        c = QColorDialog.getColor()
+        if c.isValid():
+            line_edit.setText(c.name())
 
     def populate_lists(self, p_id, p_name, p_defaults, available_list, selected_list):
         available_list.clear()
@@ -406,7 +466,12 @@ class SettingsDialog(QDialog):
         self.settings_manager.set_vector_engine_url(self.vector_url.text().strip())
         self.settings_manager.set_rag_top_k(self.rag_top_k.value())
         self.settings_manager.set_rag_min_score(self.rag_min_score.value())
+        self.settings_manager.set_rag_min_score(self.rag_min_score.value())
         # Embedding model is now hardcoded.
+
+        # Save Appearance
+        self.settings_manager.set_chat_user_color(self.user_color_input.text().strip())
+        self.settings_manager.set_chat_ai_color(self.ai_color_input.text().strip())
 
         # Save provider keys
         for p_id, _, p_key_name, _ in self.providers:

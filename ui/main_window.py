@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QMessageBox,
+    QGraphicsDropShadowEffect
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QColor
 
 from ui.chat_panel import ChatPanel
 from ui.editor_panel import EditorPanel
@@ -27,6 +29,145 @@ class CodingAgentIDE(QMainWindow):
         super().__init__()
         self.setWindowTitle("VoxAI Coding Agent IDE")
         self.resize(1200, 800)
+        
+        # Set Icon
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "Emblem.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
+        # -----------------------------------------------------------------------
+        # Global Modern Dark Theme (Cursor-like)
+        # -----------------------------------------------------------------------
+        # -----------------------------------------------------------------------
+        # Global Modern Dark Theme (Electric Blue / Neon Orange)
+        # -----------------------------------------------------------------------
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #18181b;  /* Zinc-950 */
+                color: #e4e4e7;             /* Zinc-200 */
+            }
+            QWidget {
+                font-family: 'Segoe UI', 'Inter', sans-serif;
+                font-size: 13px;
+                color: #e4e4e7;
+            }
+            
+            /* --- Scrollbars (Visible & Polished) --- */
+            QScrollBar:vertical {
+                border: none;
+                background: #18181b;
+                width: 12px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #3f3f46;
+                min-height: 20px;
+                border-radius: 6px;
+                margin: 2px;
+                border: 1px solid #27272a;
+            }
+            QScrollBar::handle:vertical:hover { background: #52525b; border-color: #00f3ff; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            
+            QScrollBar:horizontal {
+                border: none;
+                background: #18181b;
+                height: 12px;
+                margin: 0;
+            }
+            QScrollBar::handle:horizontal {
+                background: #3f3f46;
+                min-width: 20px;
+                border-radius: 6px;
+                margin: 2px;
+                border: 1px solid #27272a;
+            }
+            QScrollBar::handle:horizontal:hover { background: #52525b; border-color: #00f3ff; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+            
+            /* --- Splitters (Highly Visible) --- */
+            QSplitter::handle {
+                background-color: #3f3f46; /* Zinc-700 */
+                height: 6px; /* Much thicker handles */
+                width: 6px;
+            }
+            QSplitter::handle:horizontal {
+                width: 6px;
+                image: url(:/images/splitter_grip_v.png); /* Optional grip hint if we had one */
+            }
+            QSplitter::handle:vertical {
+                height: 6px;
+            }
+            QSplitter::handle:hover {
+                background-color: #ff9900; /* Neon Orange highlight */
+            }
+            QSplitter::handle:pressed {
+                background-color: #00f3ff; /* Electric Blue active */
+            }
+
+            /* --- Tooltips --- */
+            QToolTip {
+                background-color: #27272a;
+                color: #e4e4e7;
+                border: 1px solid #00f3ff;
+                padding: 4px;
+                border-radius: 4px;
+            }
+            
+            /* --- Menus --- */
+            QMenuBar {
+                background-color: #18181b;
+                color: #e4e4e7;
+                border-bottom: 1px solid #27272a;
+            }
+            QMenuBar::item {
+                background: transparent;
+                padding: 8px 12px;
+            }
+            QMenuBar::item:selected {
+                background-color: #27272a;
+                border-bottom: 2px solid #00f3ff;
+            }
+            QMenu {
+                background-color: #18181b;
+                border: 1px solid #3f3f46;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 6px 24px 6px 12px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #27272a; 
+                color: #00f3ff; /* Electric Blue Text */
+                border: 1px solid #00f3ff;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #3f3f46;
+                margin: 4px 0;
+            }
+            
+            /* --- Lists & Trees (Cleaner) --- */
+            QTreeView, QListView {
+                background-color: #1c1c1f; /* Slightly lighter than main bg */
+                border: none;
+                outline: none;
+            }
+            QTreeView::item, QListView::item {
+                padding: 6px; /* More breathing room */
+                border-radius: 4px;
+                margin-bottom: 2px;
+            }
+            QTreeView::item:hover, QListView::item:hover {
+                background-color: #2a2a2d;
+            }
+            QTreeView::item:selected, QListView::item:selected {
+                background-color: #2f2f35;
+                color: #00f3ff; /* Neon Blue */
+                border-left: 2px solid #00f3ff;
+            }
+        """)
 
         # Core Settings
         from core.settings import SettingsManager
@@ -103,8 +244,6 @@ class CodingAgentIDE(QMainWindow):
 
         set_project_root(self.project_path)
 
-        # Make sure model combo has something selected/displayed
-        self.refresh_models()
 
     # ------------------------------------------------------------------
     # Window/layout
@@ -127,6 +266,18 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     # Runner hooks
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Runner hooks
+    # ------------------------------------------------------------------
+    def select_and_run_script(self):
+        """Opens a file dialog to select a script, then runs it."""
+        last_dir = self.settings_manager.get_last_project_path() or os.getcwd()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Script to Run", last_dir, "All Files (*.*);;Python (*.py);;Batch (*.bat);;Shell (*.sh)"
+        )
+        if path:
+            self.run_script(path)
+
     def run_script(self, script_path):
         self.runner.run_script(script_path)
 
@@ -200,74 +351,40 @@ class CodingAgentIDE(QMainWindow):
         layout.setContentsMargins(10, 5, 10, 5)
 
         layout.addStretch()
-
-        # Model combo
-        self.model_combo = QComboBox()
-        self.model_combo.setFixedWidth(260)
-        self.model_combo.currentTextChanged.connect(self.on_model_changed)
-        layout.addWidget(self.model_combo)
-
-        # Settings button
-        self.settings_btn = QPushButton("⚙️")
-        self.settings_btn.setFixedWidth(34)
-        self.settings_btn.clicked.connect(self.open_settings)
-        layout.addWidget(self.settings_btn)
-
-        layout.addSpacing(10)
-
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("border-left: 1px solid #555;")
-        layout.addWidget(line)
-
-        layout.addSpacing(10)
-
-        self.run_btn = QPushButton("▶ Run Script")
-        self.run_btn.setStyleSheet(
-            "background-color: #4CAF50; color: white; border: none; padding: 6px 12px; "
-            "border-radius: 4px; font-weight: bold;"
-        )
-        self.run_btn.clicked.connect(self.editor_panel.request_run)
+        
+        # Toolbar items
+        self.run_btn = QPushButton("Run Script")
+        self.run_btn.setFixedSize(140, 32)
+        self.run_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #18181b; 
+                color: #ff9900; 
+                border: 1px solid #ff9900; 
+                border-radius: 4px; 
+                font-weight: 900;
+                font-family: 'Consolas', monospace;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                padding: 0 10px;
+            }
+            QPushButton:hover { 
+                background-color: #27272a; 
+                color: #00f3ff;
+                border-color: #00f3ff;
+            }
+        """)
+        
+        # Adding the Neon Glow (Drop Shadow)
+        glow = QGraphicsDropShadowEffect()
+        glow.setBlurRadius(15)
+        glow.setOffset(0, 0)
+        glow.setColor(QColor("#00f3ff")) # Neon Blue Glow
+        self.run_btn.setGraphicsEffect(glow)
+        self.run_btn.clicked.connect(self.select_and_run_script)
         layout.addWidget(self.run_btn)
-
+        
         layout.addStretch()
 
-    def refresh_models(self):
-        """Reloads the model list from settings, ensuring there's at least one selectable model."""
-        current = (
-            self.model_combo.currentText().strip() if self.model_combo.count() else ""
-        )
-        if not current:
-            current = (self.settings_manager.get_selected_model() or "").strip()
-
-        models = self.settings_manager.get_enabled_models() or []
-        models = [m for m in models if isinstance(m, str) and m.strip()]
-
-        # If user hasn't selected any models yet, provide a safe default so the app "works".
-        if not models:
-            models = ["[OpenRouter] openrouter/auto"]
-
-        self.model_combo.blockSignals(True)
-        self.model_combo.clear()
-        for m in models:
-            self.model_combo.addItem(m)
-        self.model_combo.blockSignals(False)
-
-        # Restore selection
-        idx = self.model_combo.findText(current)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-        else:
-            # Default to first model and persist it as selected
-            if self.model_combo.count() > 0:
-                self.model_combo.setCurrentIndex(0)
-                self.settings_manager.set_selected_model(self.model_combo.currentText())
-
-    def on_model_changed(self, text):
-        if text and text.strip():
-            self.settings_manager.set_selected_model(text.strip())
-            print(f"[Main] Model switched to: {text.strip()}")
 
     def open_settings(self):
         from ui.settings_dialog import SettingsDialog
@@ -308,11 +425,8 @@ class CodingAgentIDE(QMainWindow):
 
         act_exit = file_menu.addAction("Exit")
         act_exit.setShortcut("Alt+F4")
+        act_exit.setShortcut("Alt+F4")
         act_exit.triggered.connect(self.close)
-
-    def closeEvent(self, event):
-        """Cleanup on IDE shutdown."""
-        super().closeEvent(event)
 
         # Edit
         edit_menu = menu.addMenu("&Edit")
@@ -357,12 +471,13 @@ class CodingAgentIDE(QMainWindow):
         act_about = help_menu.addAction("About")
         act_about.triggered.connect(self.show_about)
 
+    def closeEvent(self, event):
+        """Cleanup on IDE shutdown."""
+        super().closeEvent(event)
+
     # ------------------------------------------------------------------
     # Menu actions
     # ------------------------------------------------------------------
-    def _current_editor(self):
-        return getattr(self.editor_panel.tabs, "currentWidget", lambda: None)()
-
     def _editor_action(self, action_name: str):
         ed = self._current_editor()
         if ed is None:
@@ -370,6 +485,11 @@ class CodingAgentIDE(QMainWindow):
         fn = getattr(ed, action_name, None)
         if callable(fn):
             fn()
+
+    def _current_editor(self):
+        if hasattr(self.editor_panel, "tabs"):
+            return self.editor_panel.tabs.currentWidget()
+        return None
 
     def open_file_dialog(self):
         start_dir = self.project_path or os.getcwd()

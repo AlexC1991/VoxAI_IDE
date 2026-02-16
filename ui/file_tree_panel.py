@@ -2,7 +2,7 @@ import os
 import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTreeView, QFileSystemModel, 
                              QLabel, QMenu)
-from PySide6.QtCore import Qt, QDir, Signal
+from PySide6.QtCore import Qt, QDir, Signal, QSize
 
 log = logging.getLogger(__name__)
 
@@ -13,9 +13,18 @@ class FileTreePanel(QWidget):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("background-color: #18181b;") # Zinc-950 base
         
-        header = QLabel("Project Browser")
-        header.setStyleSheet("font-weight: bold; padding: 5px;")
+        header = QLabel("EXPLORER")
+        header.setStyleSheet("""
+            color: #a1a1aa; 
+            font-weight: bold; 
+            font-size: 11px;
+            padding: 8px 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background-color: #18181b;
+        """)
         self.layout.addWidget(header)
         
         self.model = QFileSystemModel()
@@ -26,13 +35,43 @@ class FileTreePanel(QWidget):
         self.tree.setModel(self.model)
         self.tree.setRootIndex(self.model.index(root_path))
         self.tree.setAnimated(False)
-        self.tree.setIndentation(20)
+        self.tree.setIndentation(16)
         self.tree.setSortingEnabled(True)
-        self.tree.setColumnWidth(0, 200)
+        self.tree.setIconSize(QSize(16, 16))
+        self.tree.setHeaderHidden(True) # VS Code style
+        self.tree.setColumnHidden(1, True) # Hide Size
+        self.tree.setColumnHidden(2, True) # Hide Type
+        self.tree.setColumnHidden(3, True) # Hide Date
         
+        # Cursor/VS Code Tree Style
+        self.tree.setStyleSheet("""
+            QTreeView {
+                background-color: #18181b;
+                color: #e4e4e7;
+                border: none;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 13px;
+            }
+            QTreeView::item {
+                padding: 4px;
+            }
+            QTreeView::item:hover {
+                background-color: #27272a;
+            }
+            QTreeView::item:selected {
+                background-color: #3f3f46;
+                color: white;
+            }
+            QHeaderView::section {
+                background-color: #18181b;
+                color: #a1a1aa;
+                border: none;
+            }
+        """)
+
         # Connect to directoryLoaded to ensure we set the index after it's ready
         self.model.directoryLoaded.connect(self.on_directory_loaded)
-
+        
         self.tree.doubleClicked.connect(self.on_double_click)
         self.layout.addWidget(self.tree)
         

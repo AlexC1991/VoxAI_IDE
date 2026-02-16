@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -7,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"vox-vector-engine/internal/engine"
 	"vox-vector-engine/internal/index"
@@ -16,7 +18,7 @@ import (
 
 func main() {
 	var (
-		cmd     = flag.String("cmd", "", "command to run: ingest_message | retrieve")
+		cmd     = flag.String("cmd", "", "command to run: ingest_message | ingest_document | retrieve")
 		dataDir = flag.String("data", "data", "data directory")
 		dim     = flag.Int("dim", 768, "vector dimension")
 		input   = flag.String("input", "", "JSON input payload (or use stdin if empty)")
@@ -27,7 +29,7 @@ func main() {
 		log.Fatalf("error: -cmd is required")
 	}
 
-	// Setup components (same as server)
+	// Setup components
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatalf("failed to create data dir: %v", err)
 	}
@@ -47,21 +49,24 @@ func main() {
 	}
 	defer meta.Close()
 
-	idx := index.NewHnswIndex(vecs)
+	// Only build index for retrieval
+	var idx *index.HnswIndex
+	var eng *engine.Engine
 
-	// REBUILD INDEX: HNSW is in-memory only in this version.
-	// To support CLI persistence, we must re-insert all existing vectors.
-	count := vecs.Count()
-	if count > 0 {
-		for i := uint64(0); i < count; i++ {
-			v, err := vecs.Get(i)
-			if err == nil {
-				idx.Add(i, v)
+	if *cmd == "retrieve" {
+		idx = index.NewHnswIndex(vecs)
+		// REBUILD INDEX: HNSW is in-memory only.
+		count := vecs.Count()
+		if count > 0 {
+			for i := uint64(0); i < count; i++ {
+				v, err := vecs.Get(i)
+				if err == nil {
+					idx.Add(i, v)
+				}
 			}
 		}
+		eng = engine.NewEngine(idx, vecs, meta)
 	}
-
-	eng := engine.NewEngine(idx, vecs, meta)
 
 	// Read input
 	var inputBytes []byte
@@ -95,7 +100,6 @@ func main() {
 			log.Fatalf("json decode error: %v", err)
 		}
 
-		// Logic from server.go:HandleIngestMessage
 		msgID := req.MessageID
 		if msgID == "" {
 			msgID = fmt.Sprintf("msg-%d", os.Getpid())
@@ -103,8 +107,9 @@ func main() {
 		docID := fmt.Sprintf("chat:%s:%s", req.ConversationID, msgID)
 
 		doc := types.Document{
-			ID:     docID,
-			Source: req.Source,
+			ID:        docID,
+			Source:    req.Source,
+			Timestamp: time.Now(),
 			Metadata: types.Metadata{
 				"namespace":       req.Namespace,
 				"conversation_id": req.ConversationID,
@@ -116,9 +121,52 @@ func main() {
 		}
 
 		id, _ := vecs.Append(req.Vector)
-		idx.Add(id, req.Vector)
+		// No need to add to idx since we are closing immediately
+		
 		meta.SaveChunk(types.Chunk{
 			ID: id, DocID: docID, Content: req.Content, TokenCount: req.TokenCount,
+		})
+		fmt.Printf("{\"status\":\"ok\",\"id\":%d}\n", id)
+
+	case "ingest_document":
+		var req struct {
+			Namespace  string       `json:"namespace"`
+			FilePath   string       `json:"file_path"`
+			Content    string       `json:"content"`
+			Vector     types.Vector `json:"vector"`
+			TokenCount int          `json:"token_count"`
+			StartLine  int          `json:"start_line"`
+			EndLine    int          `json:"end_line"`
+		}
+		if err := json.Unmarshal(inputBytes, &req); err != nil {
+			log.Fatalf("json decode error: %v", err)
+		}
+
+		docID := fmt.Sprintf("file:%s:%s", req.Namespace, req.FilePath)
+
+		doc := types.Document{
+			ID:        docID,
+			Source:    req.FilePath,
+			Timestamp: time.Now(),
+			Metadata: types.Metadata{
+				"namespace": req.Namespace,
+				"file_path": req.FilePath,
+				"type":      "code",
+			},
+		}
+		if err := meta.SaveDocument(doc); err != nil {
+			log.Fatalf("save doc error: %v", err)
+		}
+
+		id, _ := vecs.Append(req.Vector)
+		
+		meta.SaveChunk(types.Chunk{
+			ID:         id,
+			DocID:      docID,
+			Content:    req.Content,
+			TokenCount: req.TokenCount,
+			StartLine:  req.StartLine,
+			EndLine:    req.EndLine,
 		})
 		fmt.Printf("{\"status\":\"ok\",\"id\":%d}\n", id)
 
@@ -135,8 +183,8 @@ func main() {
 		cfg := engine.RetrievalConfig{
 			MaxTokens:        req.MaxTokens,
 			Namespace:        req.Namespace,
-			TopKCandidates:   40,  // ANN search depth
-			SimilarityWeight: 0.7, // Default balance
+			TopKCandidates:   40,
+			SimilarityWeight: 0.7,
 			RecencyWeight:    0.3,
 		}
 		if req.MaxTokens > 40 {
