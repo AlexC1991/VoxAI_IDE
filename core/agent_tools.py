@@ -14,6 +14,17 @@ def set_project_root(path):
     log.info("Project root set to: %s", _project_root)
 
 
+def get_ide_root():
+    """Returns the root directory of the IDE installation (where main.py resides)."""
+    # This file is in core/agent_tools.py, so we go up one level
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_resource_path(relative_path):
+    """Returns an absolute path to a resource relative to the IDE root."""
+    return os.path.join(get_ide_root(), relative_path)
+
+
 def get_project_root():
     global _project_root
     if _project_root is None:

@@ -16,7 +16,7 @@ from core.settings import SettingsManager
 from core.ai_client import AIClient
 from core.rag_client import RAGClient
 from core.code_parser import CodeParser
-from core.agent_tools import AgentToolHandler
+from core.agent_tools import AgentToolHandler, get_resource_path
 from ui.widgets.chat_items import MessageItem, ProgressItem
 
 log = logging.getLogger(__name__)
@@ -475,8 +475,30 @@ class ChatPanel(QWidget):
         """)
         self.model_combo.currentTextChanged.connect(self.on_model_changed)
         self.top_bar_layout.addWidget(self.model_combo)
-        
-        # Settings button removed as requested
+
+        # Mode Selector (Command & Control)
+        self.mode_combo = QComboBox()
+        self.mode_combo.setFixedWidth(180)
+        self.mode_combo.setStyleSheet("""
+            QComboBox {
+                background: #27272a; color: #ff9900; border: 1px solid #3f3f46; 
+                padding: 4px 12px; border-radius: 4px;
+                font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;
+            }
+            QComboBox:hover { border-color: #ff9900; }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #18181b;
+                color: #e4e4e7;
+                selection-background-color: #27272a;
+                selection-color: #ff9900;
+                border: 1px solid #3f3f46;
+                outline: none;
+            }
+        """)
+        self.mode_combo.addItems(["🛑 Phased (Default)", "🔥 Siege Mode"])
+        self.top_bar_layout.addWidget(self.mode_combo)
+
         # self.settings_btn = QPushButton("⚙️") ...
         
         self.layout.addWidget(self.top_bar)
@@ -486,8 +508,7 @@ class ChatPanel(QWidget):
 
         # 2. Chat Area (Scroll) - THE LAYERED STACK
         # Layer 1 & 2: Container with Background
-        ide_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        bg_path = os.path.join(ide_root, "resources", "Chat_Background_Image.png")
+        bg_path = get_resource_path(os.path.join("resources", "Chat_Background_Image.png"))
         self.chat_container = WatermarkContainer(logo_path=bg_path)
         
         # Layer 3: The Scroll Area (Transparent)
@@ -798,6 +819,28 @@ class ChatPanel(QWidget):
         
         # Construct history
         history_to_send = [{"role": "system", "content": self.system_prompt}]
+
+        # Inject Mode-Specific Prompt
+        current_mode = self.mode_combo.currentText()
+        if "Siege Mode" in current_mode:
+            siege_prompt = """
+COMMAND & CONTROL: MODE 2 (SIEGE MODE / FULL AUTO)
+AUTHORIZATION GRANTED: "GO LIMITLESS"
+1. Bypass phase-gates.
+2. Iterate, debug, patch, and execute continuously until the objective is met.
+3. If tools fail, analyze specific errors, patch the code, and retry immediately.
+4. DO NOT STOP until the task is complete.
+"""
+            history_to_send.append({"role": "system", "content": siege_prompt})
+        else:
+            phased_prompt = """
+COMMAND & CONTROL: MODE 1 (PHASED STRATEGIC ALIGNMENT)
+1. Draft: Analyze the request. Plan phases.
+2. Authorize: Stop and wait for approval before executing a new phase.
+3. Execute: Perform the phase.
+CRITICAL: AFTER completing a phase or if you need to plan, STOP generating tool calls. Return text only.
+"""
+            history_to_send.append({"role": "system", "content": phased_prompt})
         
         limit = self.settings_manager.get_max_history_messages()
         recent_msgs = self.messages[-limit:] if len(self.messages) > limit else self.messages
@@ -948,6 +991,19 @@ class ChatPanel(QWidget):
             self.send_btn.setEnabled(True)
 
     def _start_tool_execution(self, tools):
+        # 1. Log visualization
+        for tool_name, args in tools:
+            # Format description
+            desc = f"**{tool_name}**"
+            if args:
+                # Simple truncation for cleaner UI
+                arg_str = str(args)
+                if len(arg_str) > 80:
+                    arg_str = arg_str[:80] + "..."
+                desc += f" `({arg_str})`"
+            
+            self.append_message_widget("tool", desc)
+
         # Add a progress item
         self.progress_item = ProgressItem()
         self.chat_layout.addWidget(self.progress_item)

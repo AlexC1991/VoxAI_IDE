@@ -21,7 +21,7 @@ from ui.editor_panel import EditorPanel
 from ui.file_tree_panel import FileTreePanel
 from ui.debug_drawer import DebugDrawer
 from core.runner import Runner
-from core.agent_tools import set_project_root
+from core.agent_tools import set_project_root, get_resource_path
 
 
 class CodingAgentIDE(QMainWindow):
@@ -31,7 +31,7 @@ class CodingAgentIDE(QMainWindow):
         self.resize(1200, 800)
         
         # Set Icon
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "Emblem.png")
+        icon_path = get_resource_path(os.path.join("resources", "Emblem.png"))
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 

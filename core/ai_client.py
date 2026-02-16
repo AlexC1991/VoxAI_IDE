@@ -62,6 +62,11 @@ class AIClient:
             "base_url": "{local_url}", # Placeholder for dynamic URL
             "header": None,
             "format": "openai"
+        },
+        "local_file": {
+            "base_url": None,
+            "header": None,
+            "format": "gguf"
         }
     }
 
@@ -76,7 +81,8 @@ class AIClient:
         "Kimi (Moonshot)": "kimi",
         "Z.ai (Zhipu)": "zai",
         "OpenRouter": "openrouter",
-        "Local LLM (Ollama)": "local"
+        "Local LLM (Ollama)": "local",
+        "Local": "local_file"
     }
 
     def __init__(self):
@@ -113,9 +119,14 @@ class AIClient:
             self.provider, self.model = full_model_name.split("/", 1)
             
         else:
-            # No provider info found
-            self.provider = "openai"
-            self.model = full_model_name
+            # Check for [Local] prefix
+            if full_model_name.startswith("[Local] "):
+                self.provider = "local_file"
+                self.model = full_model_name.replace("[Local] ", "")
+            else:
+                # No provider info found
+                self.provider = "openai"
+                self.model = full_model_name
 
         # Normalize provider
         self.provider = self.provider.lower()
@@ -259,56 +270,106 @@ class AIClient:
             if system_msg:
                 payload["system"] = system_msg
 
-        try:
-            # log.debug(f"Sending request to {url} with model {self.model}")
-            with requests.post(url, headers=headers, json=payload, stream=True) as response:
-                response.raise_for_status()
+        if self.provider != "local_file":
+            try:
+                # log.debug(f"Sending request to {url} with model {self.model}")
+                with requests.post(url, headers=headers, json=payload, stream=True) as response:
+                    response.raise_for_status()
+                    
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        
+                        line_text = line.decode('utf-8').strip()
+                        
+                        if fmt == "openai":
+                            if line_text.startswith("data: "):
+                                data_str = line_text[6:]
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                    if "choices" in data and len(data["choices"]) > 0:
+                                        delta = data["choices"][0].get("delta", {})
+                                        if "content" in delta:
+                                            yield delta["content"]
+                                except json.JSONDecodeError:
+                                    pass
+                                    
+                        elif fmt == "anthropic":
+                            if line_text.startswith("data: "):
+                                data_str = line_text[6:]
+                                try:
+                                    data = json.loads(data_str)
+                                    if data["type"] == "content_block_delta":
+                                        yield data["delta"]["text"]
+                                except:
+                                    pass
+                                    
+            except Exception as e:
+                error_msg = f"AI Request Failed: {e}"
+                if hasattr(e, "response") and e.response is not None:
+                    if e.response.status_code == 402:
+                         error_msg = "Provider Error: Insufficient Credits (402 Payment Required).\nPlease top up your OpenRouter/Provider balance."
+                    else:
+                        try:
+                            error_body = e.response.text
+                            log.error(f"API Error Body: {error_body}")
+                            error_msg += f"\nServer Response: {error_body}"
+                        except:
+                            pass
                 
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    line_text = line.decode('utf-8').strip()
-                    
-                    if fmt == "openai":
-                        if line_text.startswith("data: "):
-                            data_str = line_text[6:]
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                if "choices" in data and len(data["choices"]) > 0:
-                                    delta = data["choices"][0].get("delta", {})
-                                    if "content" in delta:
-                                        yield delta["content"]
-                            except json.JSONDecodeError:
-                                pass
-                                
-                    elif fmt == "anthropic":
-                        if line_text.startswith("data: "):
-                            data_str = line_text[6:]
-                            try:
-                                data = json.loads(data_str)
-                                if data["type"] == "content_block_delta":
-                                    yield data["delta"]["text"]
-                            except:
-                                pass
-                                
-        except Exception as e:
-            error_msg = f"AI Request Failed: {e}"
-            if hasattr(e, "response") and e.response is not None:
-                if e.response.status_code == 402:
-                     error_msg = "Provider Error: Insufficient Credits (402 Payment Required).\nPlease top up your OpenRouter/Provider balance."
-                else:
-                    try:
-                        error_body = e.response.text
-                        log.error(f"API Error Body: {error_body}")
-                        error_msg += f"\nServer Response: {error_body}"
-                    except:
-                        pass
-            
-            log.error(error_msg)
-            yield f"\n[Error: {error_msg}]\n"
+                log.error(error_msg)
+                yield f"\n[Error: {error_msg}]\n"
+
+        if self.provider == "local_file":
+            # GGUF Inference via llama-cpp-python
+            try:
+                from llama_cpp import Llama
+                
+                # Construct path
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                model_path = os.path.join(base_dir, "models", "llm", self.model)
+                
+                if not os.path.exists(model_path):
+                    yield f"\n[Error: Model file not found at {model_path}]\n"
+                    return
+
+                # Hardware config (reuse from hardware.py or defaults)
+                # For now, safe defaults or minimal config
+                # TODO: Integrate with hardware.py for full acceleration
+                
+                log.info(f"Loading local model: {model_path}")
+                # We should probably cache this instance in a singleton manager to avoid reload lag
+                # For now, simple load per request (inefficient but works for proof of concept)
+                
+                llm = Llama(
+                    model_path=model_path,
+                    n_ctx=4096, # decent context
+                    n_gpu_layers=-1, # Try to offload all to GPU if available (requires proper pip install)
+                    verbose=True
+                )
+                
+                # Format messages
+                # Simple chat format or raw? Llama-cpp-python has create_chat_completion
+                
+                stream = llm.create_chat_completion(
+                    messages=messages,
+                    stream=True
+                )
+                
+                for chunk in stream:
+                    if "choices" in chunk and len(chunk["choices"]) > 0:
+                        delta = chunk["choices"][0].get("delta", {})
+                        if "content" in delta:
+                            yield delta["content"]
+                            
+            except ImportError:
+                yield "\n[Error: llama-cpp-python not installed. Please run `pip install llama-cpp-python`]\n"
+            except Exception as e:
+                log.error(f"Local Inference Failed: {e}")
+                yield f"\n[Error: Local Inference Failed: {e}]\n"
+
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """

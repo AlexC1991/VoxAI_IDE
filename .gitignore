@@ -9,3 +9,6 @@ venv/
 env/
 .gemini/
 keys/secrets.json
+.vox/
+models/llm/*.gguf
+!models/llm/.gitkeep

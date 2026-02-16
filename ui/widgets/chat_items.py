@@ -60,6 +60,10 @@ class MessageItem(QWidget):
             prefix = ""
             role_name = "VoxAI"
             color = ai_color
+        elif role_lower == "tool":
+            prefix = "⚡ "
+            role_name = "Tool"
+            color = _C_ACCENT
         else:
             prefix = ""
             role_name = "System"

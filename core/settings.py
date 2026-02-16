@@ -120,10 +120,23 @@ class SettingsManager:
         self.settings.setValue("models/selected", model)
 
     def get_enabled_models(self):
-        """Returns the list of models enabled by the user (Right side list)."""
+        """Returns the list of models enabled by the user (Right side list), plus local GGUF models."""
         default_models = []
         stored = self.settings.value("models/enabled_list", default_models)
-        return stored if isinstance(stored, list) else default_models
+        if not isinstance(stored, list):
+            stored = default_models
+            
+        # Append local models
+        local_models = self.get_local_models()
+        # filter out any duplicates if they were somehow saved in stored list
+        # We prefix local models with [Local] for UI clarity
+        final_list = list(stored)
+        for lm in local_models:
+            display_name = f"[Local] {lm}"
+            if display_name not in final_list:
+                final_list.append(display_name)
+                
+        return final_list
 
     def set_enabled_models(self, models):
         """Sets the list of enabled models."""
@@ -184,3 +197,15 @@ class SettingsManager:
 
     def set_chat_ai_color(self, color: str):
         self.settings.setValue("appearance/chat_ai_color", color)
+
+    def get_local_models(self):
+        """Scans the models/llm directory for .gguf files."""
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        models_dir = os.path.join(base_dir, "models", "llm")
+        
+        if not os.path.exists(models_dir):
+            return []
+            
+        files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
+        return files
