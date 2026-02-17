@@ -26,8 +26,9 @@ jobs:
 
     - name: Build with PyInstaller
       # Excludes 'models' dir since it's likely empty/ignored in git. User must add models manually.
+      # Removed --icon argument because resources/app_icon.ico is missing.
       run: |
-        pyinstaller --noconfirm --onedir --windowed --name "VoxAI_IDE" --icon "resources/app_icon.ico" --add-data "resources;resources" --add-data "ui;ui" --add-data "core;core" --hidden-import "PySide6" --hidden-import "llama_cpp" main.py
+        pyinstaller --noconfirm --onedir --windowed --name "VoxAI_IDE" --add-data "resources;resources" --add-data "ui;ui" --add-data "core;core" --hidden-import "PySide6" --hidden-import "llama_cpp" main.py
 
     - name: Zip Build
       run: |
