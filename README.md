@@ -41,6 +41,36 @@ Standard AI editors suggest code; **VoxAI builds software**.
 -   **Multi-Threaded Execution**: Separate threads for AI inference, tool execution, and UI rendering ensure zero-lag operation using `PySide6`.
 -   **Subprocess Streaming**: Real-time pipe buffering allows the IDE to capture and stream `stdout/stderr` character-by-character, simulating a high-speed terminal experience.
 
+### ⚙️ System Architecture (The "Agentic" Loop)
+
+#### 1. The Orchestration Loop (`ui/chat_panel.py`)
+The heart of the agent is a recursive feedback loop that drives autonomy:
+```python
+while task_not_complete:
+    context = fetch_memory()      # RAG Retrieval
+    action = ai.generate()        # LLM Inference
+    tools = parse(action)         # XML Parsing
+    results = tools.execute()     # Shell/File Operations
+    memory.update(results)        # Learning
+```
+
+#### 2. Prompt Template System (`core/prompts.py`)
+Defines the "Persona" and constraints of the agent.
+-   **System Prompts**: strict instruction sets that define the agent's capabilities (e.g., `CODING_AGENT`, `CODING_AGENT_LITE`).
+-   **Mode Injection**: Dynamically injects "Siege Mode" or "Phased Mode" instructions based on user selection.
+-   **Safety Latches**: Prevents hallucinated tool calls on smaller models by simplifying instructions.
+
+#### 3. Memory & Retrieval (`core/rag_client.py` & `core/indexer.py`)
+-   **Indexer**: Scans your codebase in the background, chunking files into semantic vectors.
+-   **RAG Client**: Performs cosine similarity searches to retrieve relevant code snippets before the LLM generates a response.
+-   **Store**: A high-performance, local vector store optimized for code (not just text).
+
+#### 4. Execution Worker (`core/agent_tools.py`)
+The "Hands" of the agent. A sandboxed worker that:
+-   Executes shell commands (`run_command`).
+-   Manipulates files (`write_file`, `patch_file`).
+-   Streaming `stdout/stderr` back to the UI in real-time.
+
 ---
 
 ## ⚖ Comparison: Agentic vs. Standard AI
