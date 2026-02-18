@@ -275,11 +275,12 @@ class FileTreePanel(QWidget):
         QApplication.clipboard().setText(text)
 
     def _reveal(self, path):
+        import platform
         target = path if os.path.isdir(path) else os.path.dirname(path)
         try:
             if os.name == 'nt':
                 os.startfile(target)
-            elif os.uname().sysname == 'Darwin':
+            elif platform.system() == 'Darwin':
                 subprocess.Popen(["open", target])
             else:
                 subprocess.Popen(["xdg-open", target])

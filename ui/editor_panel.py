@@ -162,6 +162,44 @@ class CodeEditor(QPlainTextEdit):
         """)
         self.highlighter = None
         self.file_path = None
+        self._baseline_lines: list[str] = []
+        self._change_selections: list = []
+
+    def set_baseline(self, text: str):
+        """Snapshot the current content as the baseline for change highlighting."""
+        self._baseline_lines = text.splitlines()
+        self._change_selections.clear()
+        self.setExtraSelections([s for s in self.extraSelections()
+                                 if s not in self._change_selections])
+
+    def highlight_changes(self):
+        """Compare current text to baseline and highlight added/changed lines."""
+        import difflib
+        if not self._baseline_lines:
+            return
+        current_lines = self.toPlainText().splitlines()
+        matcher = difflib.SequenceMatcher(None, self._baseline_lines, current_lines)
+
+        change_sels = []
+        for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                continue
+            color = QColor(0, 80, 0, 50) if tag in ('insert', 'replace') else QColor(120, 0, 0, 50)
+            for line_idx in range(j1, j2):
+                block = self.document().findBlockByNumber(line_idx)
+                if not block.isValid():
+                    continue
+                sel = QTextEdit.ExtraSelection()
+                sel.format.setProperty(QTextFormat.FullWidthSelection, True)
+                sel.format.setBackground(color)
+                sel.cursor = self.textCursor()
+                sel.cursor.setPosition(block.position())
+                change_sels.append(sel)
+
+        self._change_selections = change_sels
+        # Merge with existing extra selections (like bracket matching)
+        existing = [s for s in self.extraSelections() if s not in self._change_selections]
+        self.setExtraSelections(existing + change_sels)
 
     # --- Line numbers ---
     def line_number_area_width(self):
@@ -559,7 +597,8 @@ class EditorPanel(QWidget):
                             c = w.textCursor()
                             c.setPosition(min(cursor_pos, len(new_content)))
                             w.setTextCursor(c)
-                            log.info("Auto-reloaded %s", path)
+                            w.highlight_changes()
+                            log.info("Auto-reloaded %s (changes highlighted)", path)
                     except Exception as e:
                         log.debug("Reload failed for %s: %s", path, e)
 
@@ -583,7 +622,9 @@ class EditorPanel(QWidget):
             if getattr(w, 'file_path', None) == path:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
-                        w.setPlainText(f.read())
+                        content = f.read()
+                    w.setPlainText(content)
+                    w.set_baseline(content)
                     self.tabs.setCurrentIndex(i)
                 except Exception as e:
                     log.error("Reload %s: %s", path, e)
@@ -598,6 +639,7 @@ class EditorPanel(QWidget):
 
         editor = self.new_file(title=os.path.basename(path), content=content)
         editor.file_path = path
+        editor.set_baseline(content)
         self._watch(path)
 
     def close_tab(self, index):
@@ -640,11 +682,11 @@ class EditorPanel(QWidget):
         line = cursor.blockNumber() + 1
         col = cursor.columnNumber() + 1
 
-        # Grab a window of code around the cursor (±15 lines)
+        # Grab a window of code around the cursor (±10 lines)
         text = editor.toPlainText()
         lines = text.splitlines()
-        start = max(0, line - 16)
-        end = min(len(lines), line + 15)
+        start = max(0, line - 11)
+        end = min(len(lines), line + 10)
         snippet_lines = []
         for i in range(start, end):
             marker = " >> " if i == line - 1 else "    "

@@ -18,6 +18,8 @@ from ui.file_tree_panel import FileTreePanel
 from ui.debug_drawer import DebugDrawer
 from ui.search_panel import SearchPanel
 from ui.history_sidebar import HistorySidebar
+from ui.file_switcher import FileSwitcher
+from ui.code_outline import CodeOutline
 from core.runner import Runner
 from core.agent_tools import set_project_root, get_resource_path
 
@@ -135,6 +137,7 @@ class CodingAgentIDE(QMainWindow):
 
         self.editor_panel = EditorPanel()
         self.editor_panel.run_requested.connect(self.run_script)
+        self.editor_panel.tabs.currentChanged.connect(self._on_editor_tab_changed)
 
         # Give the chat panel access to the active editor context
         self.chat_panel._editor_context_getter = self.editor_panel.get_active_context
@@ -157,6 +160,10 @@ class CodingAgentIDE(QMainWindow):
         # Project-wide search
         self.search_panel = SearchPanel(self)
         self.search_panel.file_requested.connect(self._open_search_result)
+
+        # Code outline sidebar
+        self.code_outline = CodeOutline(self)
+        self.code_outline.line_requested.connect(self._goto_line)
 
         # Conversation history sidebar
         self.history_sidebar = HistorySidebar(self)
@@ -185,7 +192,13 @@ class CodingAgentIDE(QMainWindow):
         self.main_splitter.addWidget(self.right_splitter)
         self.right_splitter.addWidget(self.editor_panel)
         self.right_splitter.addWidget(self.search_panel)
-        self.right_splitter.addWidget(self.tree_panel)
+
+        # Bottom right: file tree + code outline side by side
+        self.bottom_right = QSplitter(Qt.Horizontal)
+        self.bottom_right.addWidget(self.tree_panel)
+        self.bottom_right.addWidget(self.code_outline)
+        self.bottom_right.setSizes([300, 0])
+        self.right_splitter.addWidget(self.bottom_right)
 
         self.main_splitter.setSizes([300, 900])
         self.right_splitter.setSizes([500, 0, 200])
@@ -205,6 +218,10 @@ class CodingAgentIDE(QMainWindow):
             self._toggle_search_panel)
         QShortcut(QKeySequence("Ctrl+H"), self).activated.connect(
             self._toggle_history_sidebar)
+        QShortcut(QKeySequence("Ctrl+P"), self).activated.connect(
+            self._open_file_switcher)
+        QShortcut(QKeySequence("Ctrl+Shift+L"), self).activated.connect(
+            self._toggle_code_outline)
 
         # Project selection
         self.select_project_folder()
@@ -239,8 +256,21 @@ class CodingAgentIDE(QMainWindow):
         self._status_encoding.setStyleSheet("color: #a1a1aa; padding: 0 12px;")
         sb.addPermanentWidget(self._status_encoding)
 
-        self._status_tokens = QLabel("Tokens: 0")
-        self._status_tokens.setStyleSheet("color: #00f3ff; padding: 0 12px;")
+        # Token usage context bar
+        from PySide6.QtWidgets import QProgressBar
+        self._token_bar = QProgressBar()
+        self._token_bar.setFixedWidth(120)
+        self._token_bar.setFixedHeight(14)
+        self._token_bar.setRange(0, 100)
+        self._token_bar.setValue(0)
+        self._token_bar.setFormat("")
+        self._token_bar.setStyleSheet(
+            "QProgressBar { background: #27272a; border: 1px solid #3f3f46; border-radius: 3px; }"
+            "QProgressBar::chunk { background: #00f3ff; border-radius: 2px; }")
+        sb.addPermanentWidget(self._token_bar)
+
+        self._status_tokens = QLabel("0 / 24K tok")
+        self._status_tokens.setStyleSheet("color: #00f3ff; padding: 0 8px; font-size: 11px;")
         sb.addPermanentWidget(self._status_tokens)
 
         # Periodic git branch refresh
@@ -274,7 +304,27 @@ class CodingAgentIDE(QMainWindow):
             self._status_cursor.setText(f"Ln {line}, Col {col}")
 
     def update_token_count(self, count: int):
-        self._status_tokens.setText(f"Tokens: {count:,}")
+        max_tok = self.settings_manager.get_max_history_tokens()
+        pct = min(100, int(count / max(max_tok, 1) * 100))
+        self._token_bar.setValue(pct)
+
+        if pct < 50:
+            color = "#00f3ff"
+        elif pct < 80:
+            color = "#e5c07b"
+        else:
+            color = "#ef4444"
+        self._token_bar.setStyleSheet(
+            f"QProgressBar {{ background: #27272a; border: 1px solid #3f3f46; border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}")
+
+        if count >= 1000:
+            disp = f"{count/1000:.1f}K"
+        else:
+            disp = str(count)
+        max_disp = f"{max_tok/1000:.0f}K"
+        self._status_tokens.setText(f"{disp} / {max_disp} tok")
+        self._status_tokens.setStyleSheet(f"color: {color}; padding: 0 8px; font-size: 11px;")
 
     # ------------------------------------------------------------------
     # Command Palette
@@ -290,6 +340,8 @@ class CodingAgentIDE(QMainWindow):
             ("Toggle Debug Panel", self._toggle_debug_drawer),
             ("Search in Project  (Ctrl+Shift+F)", self._toggle_search_panel),
             ("Conversation History  (Ctrl+H)", self._toggle_history_sidebar),
+            ("Go to File  (Ctrl+P)", self._open_file_switcher),
+            ("Code Outline  (Ctrl+Shift+L)", self._toggle_code_outline),
             ("Find & Replace", self.editor_panel._toggle_find),
             ("Clear Chat Context", self.chat_panel.clear_context),
             ("Export Conversation…", self._export_conversation),
@@ -344,6 +396,51 @@ class CodingAgentIDE(QMainWindow):
         self.history_sidebar.refresh(convos, self.chat_panel.conversation_id)
 
     # ------------------------------------------------------------------
+    # Code outline
+    # ------------------------------------------------------------------
+    def _toggle_code_outline(self):
+        self.code_outline.toggle()
+        if self.code_outline.isVisible():
+            sizes = self.bottom_right.sizes()
+            if sizes[1] < 100:
+                self.bottom_right.setSizes([sizes[0], 200])
+            self._refresh_outline()
+
+    def _on_editor_tab_changed(self, index):
+        if self.code_outline.isVisible():
+            self._refresh_outline()
+
+    def _refresh_outline(self):
+        editor = self.editor_panel.tabs.currentWidget()
+        if editor and hasattr(editor, 'file_path') and hasattr(editor, 'toPlainText'):
+            self.code_outline.update_outline(
+                getattr(editor, 'file_path', '') or '',
+                editor.toPlainText())
+
+    def _goto_line(self, line: int):
+        editor = self.editor_panel.tabs.currentWidget()
+        if editor and hasattr(editor, 'textCursor'):
+            from PySide6.QtGui import QTextCursor
+            block = editor.document().findBlockByLineNumber(line - 1)
+            cursor = editor.textCursor()
+            cursor.setPosition(block.position())
+            editor.setTextCursor(cursor)
+            editor.centerCursor()
+
+    # ------------------------------------------------------------------
+    # Quick file switcher (Ctrl+P)
+    # ------------------------------------------------------------------
+    def _open_file_switcher(self):
+        dlg = FileSwitcher(self.project_path or os.getcwd(), self)
+        dlg.file_selected.connect(self.editor_panel.load_file)
+        # Center on parent
+        geo = self.geometry()
+        dlg.move(geo.center().x() - dlg.width() // 2,
+                 geo.top() + 80)
+        dlg.show()
+        dlg.input.setFocus()
+
+    # ------------------------------------------------------------------
     # Interactive git diff viewer
     # ------------------------------------------------------------------
     def _show_git_diff(self, file_path: str):
@@ -358,7 +455,7 @@ class CodingAgentIDE(QMainWindow):
             if not diff_text:
                 # Might be untracked — show full file as addition
                 result = subprocess.run(
-                    ["git", "diff", "--no-index", "/dev/null", file_path],
+                    ["git", "diff", "--no-index", os.devnull, file_path],
                     cwd=root, capture_output=True, text=True, timeout=5)
                 diff_text = result.stdout.strip()
             if not diff_text:
@@ -701,6 +798,10 @@ class CodingAgentIDE(QMainWindow):
                             QKeySequence("Ctrl+Shift+F"))
         view_menu.addAction("Conversation History", self._toggle_history_sidebar,
                             QKeySequence("Ctrl+H"))
+        view_menu.addAction("Go to File", self._open_file_switcher,
+                            QKeySequence("Ctrl+P"))
+        view_menu.addAction("Code Outline", self._toggle_code_outline,
+                            QKeySequence("Ctrl+Shift+L"))
         view_menu.addAction("Terminal Mode", self._enter_terminal_mode)
 
         options_menu = menu.addMenu("&Options")

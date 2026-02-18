@@ -101,6 +101,7 @@ class IronGateClient:
             return "[Error: Rate limit exceeded. Try again in a moment.]"
 
         log.info("fetch_url: %s", url)
+        content_type = ""
 
         try:
             resp = requests.get(

@@ -162,14 +162,22 @@ class TerminalEngine:
 
     def export(self, path: str):
         try:
+            abs_path = os.path.abspath(path)
+            project_root = os.path.abspath(os.getcwd())
+            if not abs_path.startswith(project_root):
+                print(f"{C.RED}  Export path must be within the project directory.{C.RESET}")
+                return
             lines = []
             for m in self.messages:
                 role = m.get("role", "?").upper()
                 content = m.get("content", "")
                 lines.append(f"## {role}\n\n{content}\n\n---\n")
-            with open(path, 'w', encoding='utf-8') as f:
+            parent = os.path.dirname(abs_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(abs_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(lines))
-            print(f"{C.GREEN}  Exported to {path}{C.RESET}")
+            print(f"{C.GREEN}  Exported to {abs_path}{C.RESET}")
         except Exception as e:
             print(f"{C.RED}  Export failed: {e}{C.RESET}")
 
@@ -356,16 +364,21 @@ class TerminalEngine:
 
                 elif cmd in ('git_status', 'git_diff', 'git_log', 'git_commit',
                              'git_push', 'git_pull', 'git_fetch'):
-                    remote = args.get('remote', 'origin')
-                    branch = args.get('branch', '')
+                    remote = _shell_quote(args.get('remote', 'origin'))
+                    branch = _shell_quote(args.get('branch', '')) if args.get('branch') else ''
+                    try:
+                        count = str(max(1, int(args.get('count', 15))))
+                    except (ValueError, TypeError):
+                        count = '15'
+                    diff_path = _shell_quote(args.get('path', '')) if args.get('path') else ''
                     git_cmds = {
                         'git_status': 'git status --short',
-                        'git_diff': 'git diff' + (f" {args.get('path','')}" if args.get('path') else ''),
-                        'git_log': f"git log --oneline -n {args.get('count','15')}",
+                        'git_diff': f'git diff {diff_path}'.strip(),
+                        'git_log': f'git log --oneline -n {count}',
                         'git_commit': 'git add -A && git commit -m ' + _shell_quote(args.get("message", "auto-commit")),
-                        'git_push': f"git push {remote} {branch}".strip(),
-                        'git_pull': f"git pull {remote} {branch}".strip(),
-                        'git_fetch': f"git fetch {remote}".strip(),
+                        'git_push': f'git push {remote} {branch}'.strip(),
+                        'git_pull': f'git pull {remote} {branch}'.strip(),
+                        'git_fetch': f'git fetch {remote}'.strip(),
                     }
                     git_cmd = git_cmds[cmd]
                     result = AgentToolHandler.execute_command(git_cmd)

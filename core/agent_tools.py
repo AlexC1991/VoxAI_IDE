@@ -69,8 +69,8 @@ class AgentToolHandler:
     # READ (allowed everywhere)
     # ------------------------------------------------------------------
     @staticmethod
-    def read_file(path, start_line=1, end_line=300):
-        """Reads content of a file. Defaults to first 300 lines."""
+    def read_file(path, start_line=1, end_line=150):
+        """Reads content of a file. Defaults to first 150 lines."""
         if not os.path.exists(path):
             return f"[Error: File not found: {path}]"
         if "crash.log" in os.path.basename(path):
@@ -96,8 +96,9 @@ class AgentToolHandler:
 
     @staticmethod
     def list_files(root_dir="."):
-        """Lists all files in the directory recursively."""
+        """Lists all files in the directory recursively (capped at 200 entries)."""
         file_list = []
+        max_entries = 200
         for root, dirs, files in os.walk(root_dir):
             dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
             for file in files:
@@ -106,6 +107,9 @@ class AgentToolHandler:
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, root_dir)
                 file_list.append(rel_path)
+                if len(file_list) >= max_entries:
+                    file_list.append(f"... (capped at {max_entries} entries)")
+                    return "\n".join(file_list)
         return "\n".join(file_list)
 
     @staticmethod
@@ -273,11 +277,18 @@ class AgentToolHandler:
                 text=True,
                 timeout=timeout,
             )
+            MAX_CMD_OUTPUT = 6000
             output = ""
             if result.stdout:
-                output += f"STDOUT:\n{result.stdout}"
+                stdout = result.stdout
+                if len(stdout) > MAX_CMD_OUTPUT:
+                    stdout = stdout[:2000] + f"\n... [{len(stdout) - 4000} chars truncated] ...\n" + stdout[-2000:]
+                output += f"STDOUT:\n{stdout}"
             if result.stderr:
-                output += f"\nSTDERR:\n{result.stderr}"
+                stderr = result.stderr
+                if len(stderr) > MAX_CMD_OUTPUT:
+                    stderr = stderr[-MAX_CMD_OUTPUT:]
+                output += f"\nSTDERR:\n{stderr}"
             if result.returncode != 0:
                 output += f"\n[Exit code: {result.returncode}]"
             return output.strip() or "[Command completed with no output]"

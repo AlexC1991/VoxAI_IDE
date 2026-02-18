@@ -51,8 +51,11 @@ Standard AI editors suggest code; **VoxAI builds software**.
 - **Bracket Matching** — Real-time highlighting of matching `()`, `{}`, `[]` pairs with gold indicators.
 - **Code Folding** — Double-click the line number gutter to collapse/expand blocks.
 - **File Watcher** — Open tabs auto-reload when files change on disk (from AI tools, git, or external editors).
+- **Live Change Highlighting** — When the AI writes a file, open tabs auto-reload and highlight added/changed lines in green using `difflib` against the baseline. See exactly what changed at a glance.
 - **Diff Viewer** — Color-coded unified diffs in dedicated tabs. Batch multiple diffs from a single tool run.
 - **Project-Wide Search** — `Ctrl+Shift+F` opens a grep-style search across all project files with regex, case-sensitivity, and file-type filters. Double-click results to jump to the exact line.
+- **Quick File Switcher** — `Ctrl+P` opens a fuzzy-search overlay to jump to any file by name instantly.
+- **Code Outline** — `Ctrl+Shift+L` opens a sidebar showing classes, functions, and methods for the active file. Python files use full AST parsing; JS/TS/C/Go/Rust use regex patterns. Double-click to jump to symbol.
 
 ### File Explorer
 
@@ -70,7 +73,8 @@ Standard AI editors suggest code; **VoxAI builds software**.
 - **Copy / Regenerate** — Every message has a "Copy" button. AI messages have "Regenerate" to re-run.
 - **Apply / Reject Workflow** — Proposed file changes show a diff preview and require approval (unless auto-approve is enabled or Siege Mode is active).
 - **Thought Blocks** — AI reasoning is shown in collapsible panels, stripped from the visible response.
-- **Token Usage** — Per-message token counts in the footer. Running total in the status bar.
+- **Token Usage** — Per-message token counts in the footer. Context window visualization bar in the status bar with color-coded fill (green/yellow/red).
+- **Token Optimization** — Automatic truncation of tool outputs, file attachments, and command results. Old conversation messages are compressed into recaps. System prompts are condensed. ~30-50% fewer tokens per request.
 
 ### Command & Control
 
@@ -148,6 +152,8 @@ VoxAI_IDE/
 │   ├── settings_dialog.py     # Settings UI (tabbed)
 │   ├── model_manager.py       # GGUF model manager dialog
 │   ├── search_panel.py        # Project-wide search (Ctrl+Shift+F)
+│   ├── file_switcher.py       # Quick file switcher (Ctrl+P)
+│   ├── code_outline.py        # Symbol outline sidebar (Ctrl+Shift+L)
 │   ├── history_sidebar.py     # Conversation history browser (Ctrl+H)
 │   ├── debug_drawer.py        # Terminal output panel
 │   ├── crash_reporter.py      # Crash dialog
@@ -255,7 +261,9 @@ Or on Windows:
 | Shortcut | Action |
 |:---------|:-------|
 | `Ctrl+Shift+P` | Command Palette |
+| `Ctrl+P` | Quick File Switcher |
 | `Ctrl+Shift+F` | Search in Project |
+| `Ctrl+Shift+L` | Code Outline |
 | `Ctrl+H` | Conversation History |
 | `Ctrl+F` | Find & Replace |
 | `Ctrl+S` | Save file |

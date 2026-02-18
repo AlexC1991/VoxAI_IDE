@@ -1,7 +1,6 @@
 
 # -*- coding: utf-8 -*-
 import os
-import sys
 import re
 import json
 import logging
@@ -82,6 +81,10 @@ class AIWorker(QObject):
         self.client = AIClient()
         self.settings = SettingsManager()
 
+    # Class-level project structure cache
+    _cached_structure: str = ""
+    _cached_root: str = ""
+
     def run(self):
         log.info("AIWorker starting | model=%s", self.model)
 
@@ -89,27 +92,29 @@ class AIWorker(QObject):
         project_root = get_project_root()
         cwd = project_root.replace("\\", "/")
 
-        try:
-            files = []
-            for root, dirs, filenames in os.walk(project_root):
-                if ".git" in dirs: dirs.remove(".git")
-                if "__pycache__" in dirs: dirs.remove("__pycache__")
-                if "node_modules" in dirs: dirs.remove("node_modules")
-                for f in filenames:
-                    rel_path = os.path.relpath(os.path.join(root, f), project_root)
-                    files.append(rel_path)
+        # Use cached structure if same project root
+        if AIWorker._cached_root != project_root:
+            try:
+                files = []
+                skip = {".git", "__pycache__", "node_modules", ".venv",
+                        "venv", "storage", ".vox", "dist", "build"}
+                for root, dirs, filenames in os.walk(project_root):
+                    dirs[:] = [d for d in dirs if d not in skip]
+                    for f in filenames:
+                        files.append(os.path.relpath(os.path.join(root, f), project_root))
 
-            stop_idx = self.settings.get_max_file_list()
-            file_list_str = "\n".join(files[:stop_idx])
-            if len(files) > stop_idx:
-                file_list_str += f"\n...({len(files)-stop_idx} more files)..."
-            structure_msg = f"Current Project Structure at {cwd}:\n{file_list_str}\n\nAlways use <list_files /> for full project details."
-        except Exception as e:
-            log.error("Structure injection error: %s", e)
-            structure_msg = f"Working in: {cwd}"
+                stop_idx = min(self.settings.get_max_file_list(), 30)
+                file_list_str = "\n".join(files[:stop_idx])
+                if len(files) > stop_idx:
+                    file_list_str += f"\n...({len(files) - stop_idx} more)"
+                AIWorker._cached_structure = f"Project: {cwd} ({len(files)} files)\n{file_list_str}\nUse <list_files /> for full listing."
+                AIWorker._cached_root = project_root
+            except Exception as e:
+                log.error("Structure injection error: %s", e)
+                AIWorker._cached_structure = f"Project: {cwd}"
 
         final_messages = []
-        final_messages.append({"role": "system", "content": f"CRITICAL CONTEXT: {structure_msg}"})
+        final_messages.append({"role": "system", "content": AIWorker._cached_structure})
 
         for msg in self.message_history:
             if msg.get("role") == "system":
@@ -742,11 +747,13 @@ class ChatPanel(QWidget):
         self._auto_scroll = True
         self._editor_context_getter = None  # set by main_window
         
-        # Threads
-        self.ai_thread = None
-        self.ai_worker = None
+        # Threads (use the same names throughout lifecycle)
+        self.ai_thread_obj = None
+        self.ai_worker_obj = None
         self.tool_thread = None
         self.tool_worker = None
+        self.current_ai_item = None
+        self.progress_item = None
 
         # Load system prompt
         from core.prompts import SystemPrompts
@@ -1199,20 +1206,12 @@ class ChatPanel(QWidget):
             try:
                 ctx = self._editor_context_getter()
                 if ctx:
-                    ctx_msg = (
-                        f"[EDITOR CONTEXT — auto-attached, not typed by user]\n"
-                        f"Currently open file: {ctx['file']}  "
-                        f"(line {ctx['line']}, col {ctx['col']}, "
-                        f"{ctx['total_lines']} total lines)\n"
-                        f"Code around cursor:\n```\n{ctx['snippet']}\n```"
-                    )
+                    ctx_msg = f"[EDITOR] {ctx['file']}:{ctx['line']} ({ctx['total_lines']} lines)\n```\n{ctx['snippet']}\n```"
                     history_to_send.append({"role": "system", "content": ctx_msg})
             except Exception:
                 pass
 
-        # Token-aware history truncation: keep as many recent messages as
-        # fit within ~75% of the typical context window, leaving room for
-        # system prompts, attachments, and the AI's response.
+        # Token-aware history truncation with old-message compression
         max_history_tokens = self.settings_manager.get_max_history_tokens()
         msg_limit = self.settings_manager.get_max_history_messages()
         recent_msgs = self.messages[-msg_limit:] if len(self.messages) > msg_limit else list(self.messages)
@@ -1226,8 +1225,21 @@ class ChatPanel(QWidget):
                 cutoff = i + 1
                 break
             token_total += est
+
         if cutoff > 0:
+            # Compress old messages into a recap instead of dropping them
+            old_msgs = recent_msgs[:cutoff]
             recent_msgs = recent_msgs[cutoff:]
+            recap_parts = []
+            for m in old_msgs:
+                role = m.get("role", "?")
+                content = str(m.get("content", ""))[:200]
+                if "[TOOL_RESULT]" in content:
+                    content = content.split("\n")[0][:100] + "..."
+                recap_parts.append(f"- {role}: {content}")
+            if recap_parts:
+                recap = "[Earlier conversation recap]\n" + "\n".join(recap_parts)
+                recent_msgs.insert(0, {"role": "system", "content": recap})
         
         if user_text is not None:
             # We filter the LAST message if it's already in history (from send_message/send_worker)
@@ -1261,9 +1273,18 @@ class ChatPanel(QWidget):
                         log.error("Failed to load image %s: %s", att_path, e)
                 else:
                     try:
+                        MAX_ATTACH = 16000
                         with open(att_path, "r", encoding="utf-8", errors="replace") as f:
                             file_content = f.read()
-                        text_body += f"\n\n--- Attached File: {os.path.basename(att_path)} ---\n{file_content}\n--- End File ---"
+                        if len(file_content) > MAX_ATTACH:
+                            keep_head = int(MAX_ATTACH * 0.8)
+                            keep_tail = MAX_ATTACH - keep_head
+                            file_content = (
+                                file_content[:keep_head]
+                                + f"\n\n... [{len(file_content) - MAX_ATTACH} chars truncated] ...\n\n"
+                                + file_content[-keep_tail:]
+                            )
+                        text_body += f"\n\n[FILE: {os.path.basename(att_path)}]\n{file_content}\n[/FILE]"
                         log.debug("Attached text file (%d chars): %s", len(file_content), os.path.basename(att_path))
                     except Exception as e:
                         log.error("Failed to read attachment %s: %s", att_path, e)
@@ -1331,7 +1352,8 @@ class ChatPanel(QWidget):
 
     def handle_ai_chunk(self, chunk):
         self.current_ai_response += chunk
-        self.current_ai_item.set_text(self.current_ai_response)
+        if self.current_ai_item:
+            self.current_ai_item.set_text(self.current_ai_response)
 
     def handle_ai_usage(self, usage):
         if self.current_ai_item:
@@ -1343,11 +1365,11 @@ class ChatPanel(QWidget):
     def handle_stop_button(self):
         """Interrupts AI and tool workers and resets the button."""
         stopped = False
-        if hasattr(self, 'ai_thread_obj') and self.ai_thread_obj and self.ai_thread_obj.isRunning():
+        if self.ai_thread_obj and self.ai_thread_obj.isRunning():
             log.info("Stopping AI generation...")
             self.ai_thread_obj.requestInterruption()
             stopped = True
-        if hasattr(self, 'tool_thread') and self.tool_thread and self.tool_thread.isRunning():
+        if self.tool_thread and self.tool_thread.isRunning():
             log.info("Stopping tool execution...")
             self.tool_thread.requestInterruption()
             stopped = True
@@ -1400,7 +1422,7 @@ class ChatPanel(QWidget):
         thought_blocks = _re.findall(r'<thought>(.*?)</thought>', self.current_ai_response, _re.DOTALL)
         display_response = _re.sub(r'<thought>.*?</thought>\s*', '', self.current_ai_response, flags=_re.DOTALL).strip()
 
-        if thought_blocks:
+        if thought_blocks and self.current_ai_item:
             thought_text = "\n---\n".join(t.strip() for t in thought_blocks)
             thought_item = ProgressItem()
             thought_item.set_thought(thought_text)
@@ -1413,7 +1435,8 @@ class ChatPanel(QWidget):
 
         if display_response != self.current_ai_response:
             self.current_ai_response = display_response
-            self.current_ai_item.set_text(display_response)
+            if self.current_ai_item:
+                self.current_ai_item.set_text(display_response)
 
         self.messages.append({"role": "assistant", "content": self.current_ai_response})
         self.save_conversation()
@@ -1513,11 +1536,20 @@ class ChatPanel(QWidget):
             self.tool_worker.approve(reply == QMessageBox.Yes)
 
     def handle_tool_finished(self, output):
-        self.progress_item.finish()
+        if self.progress_item:
+            self.progress_item.finish()
         self.tool_loop_count = getattr(self, 'tool_loop_count', 0) + 1
         log.debug("handle_tool_finished: loop_count=%d output_len=%d",
                   self.tool_loop_count, len(output))
 
+        MAX_TOOL_OUTPUT = 8000
+        if len(output) > MAX_TOOL_OUTPUT:
+            half = MAX_TOOL_OUTPUT // 2
+            output = (
+                output[:half]
+                + f"\n\n... [{len(output) - MAX_TOOL_OUTPUT} chars truncated] ...\n\n"
+                + output[-half:]
+            )
         tool_msg = (
             "[TOOL_RESULT] (Automated system output — not user input)\n"
             f"{output}\n"
