@@ -14,11 +14,11 @@
 ![Version](https://img.shields.io/badge/Version-2.1%20Agentic-cyan?style=for-the-badge)
 ![Status](https://img.shields.io/badge/Status-Beta-orange?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge)
-![Build](https://img.shields.io/github/actions/workflow/status/BattyBatterson/VoxAI_IDE/build.yml?style=for-the-badge&label=Build)
+![Build](https://img.shields.io/github/actions/workflow/status/AlexC1991/VoxAI_IDE/build.yml?style=for-the-badge&label=Build)
 
 **VoxAI IDE** is a local-first autonomous coding agent — built to compete with Cursor and Claude Code. Purpose-built for developers who direct high-level intent and let a specialized AI handle implementation, debugging, and execution end-to-end.
 
-> Download the latest Windows release from the [Releases](https://github.com/BattyBatterson/VoxAI_IDE/releases) page — no Python install required.
+> Download the latest Windows release from the [Releases](https://github.com/AlexC1991/VoxAI_IDE/releases) page — no Python install required.
 
 ---
 
@@ -246,7 +246,7 @@ User Input
 
 ### Option 1 — Download Release (Recommended)
 
-1. Go to the [Releases](https://github.com/BattyBatterson/VoxAI_IDE/releases) page.
+1. Go to the [Releases](https://github.com/AlexC1991/VoxAI_IDE/releases) page.
 2. Download the latest `VoxAI_IDE-vX.X.X-windows.zip`.
 3. Extract and run `VoxAI_IDE.exe`.
 4. (Optional) Drop `.gguf` models into the `models/llm/` folder for offline use.
@@ -256,7 +256,7 @@ User Input
 **Prerequisites:** Python 3.10+, Git, (Optional) Go 1.22+ for RAG engine, NVIDIA GPU for local GGUF inference.
 
 ```bash
-git clone https://github.com/BattyBatterson/VoxAI_IDE.git
+git clone https://github.com/AlexC1991/VoxAI_IDE.git
 cd VoxAI_IDE
 pip install -r requirements.txt
 python main.py
