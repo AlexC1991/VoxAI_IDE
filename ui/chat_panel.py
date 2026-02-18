@@ -3,6 +3,7 @@
 import os
 import sys
 import re
+import json
 import logging
 import threading
 from PySide6.QtWidgets import (
@@ -529,6 +530,7 @@ class ChatPanel(QWidget):
     diff_ready = Signal(str, str) # file_path, unified diff text
     notification_requested = Signal(str, str) # title, message
     token_usage_updated = Signal(int) # total tokens for status bar
+    conversation_changed = Signal()  # emitted when conversations are saved/switched
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -738,6 +740,7 @@ class ChatPanel(QWidget):
         self.messages = [] # List of {"role":Str, "content":Str}
         self.is_processing = False
         self._auto_scroll = True
+        self._editor_context_getter = None  # set by main_window
         
         # Threads
         self.ai_thread = None
@@ -910,52 +913,137 @@ class ChatPanel(QWidget):
         sb = self.scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def _conversation_file(self) -> str:
-        """Path to the auto-save file for the current project."""
+    # ------------------------------------------------------------------
+    # Conversation history (multi-conversation support)
+    # ------------------------------------------------------------------
+    def _history_dir(self) -> str:
         from core.agent_tools import get_project_root
-        vox_dir = os.path.join(get_project_root(), ".vox")
-        os.makedirs(vox_dir, exist_ok=True)
-        return os.path.join(vox_dir, "conversation.json")
+        d = os.path.join(get_project_root(), ".vox", "history")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _conversation_file(self) -> str:
+        return os.path.join(self._history_dir(), f"{self.conversation_id}.json")
+
+    def _derive_title(self) -> str:
+        for m in self.messages:
+            if m.get("role") == "user" and m.get("content", "").strip():
+                return m["content"].strip()[:80]
+        return "New Conversation"
 
     def save_conversation(self):
-        """Persists the current messages to disk."""
         if not self.messages:
             return
         if not self.settings_manager.get_auto_save_conversation():
             return
         try:
-            import json
+            from datetime import datetime
             data = {
                 "conversation_id": self.conversation_id,
+                "title": self._derive_title(),
+                "updated_at": datetime.now().isoformat(),
                 "messages": self.messages,
             }
             with open(self._conversation_file(), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            # Also save the pointer to current conversation
+            pointer = os.path.join(self._history_dir(), "current.txt")
+            with open(pointer, "w", encoding="utf-8") as f:
+                f.write(self.conversation_id)
             log.debug("Conversation saved (%d messages)", len(self.messages))
+            self.conversation_changed.emit()
         except Exception as e:
             log.error("Failed to save conversation: %s", e)
 
     def load_conversation(self):
-        """Restores messages from disk and replays them into the UI."""
-        path = self._conversation_file()
+        """Restores the most recent conversation (from pointer) or falls back."""
+        pointer = os.path.join(self._history_dir(), "current.txt")
+        conv_id = None
+        if os.path.exists(pointer):
+            try:
+                with open(pointer, "r", encoding="utf-8") as f:
+                    conv_id = f.read().strip()
+            except Exception:
+                pass
+
+        # Legacy migration: check for old single-file format
+        from core.agent_tools import get_project_root
+        legacy = os.path.join(get_project_root(), ".vox", "conversation.json")
+        if not conv_id and os.path.exists(legacy):
+            try:
+                with open(legacy, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                conv_id = data.get("conversation_id", self.conversation_id)
+                # Migrate to history format
+                self.conversation_id = conv_id
+                self.messages = data.get("messages", [])
+                self.save_conversation()
+                os.remove(legacy)
+                for m in self.messages:
+                    self.append_message_widget(m["role"], m.get("content", ""))
+                log.info("Migrated legacy conversation (%d msgs)", len(self.messages))
+                return
+            except Exception:
+                pass
+
+        if conv_id:
+            self.switch_conversation(conv_id)
+        else:
+            log.info("No conversation history found. Starting fresh.")
+
+    def switch_conversation(self, conv_id: str):
+        """Load a specific conversation by ID, clearing the current UI."""
+        path = os.path.join(self._history_dir(), f"{conv_id}.json")
         if not os.path.exists(path):
+            log.warning("Conversation file not found: %s", path)
             return
         try:
-            import json
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            msgs = data.get("messages", [])
-            if not msgs:
-                return
-            self.conversation_id = data.get("conversation_id", self.conversation_id)
-            self.messages = msgs
-            for m in msgs:
+            # Clear current UI
+            while self.chat_layout.count():
+                child = self.chat_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            self.conversation_id = data.get("conversation_id", conv_id)
+            self.messages = data.get("messages", [])
+            for m in self.messages:
                 self.append_message_widget(m["role"], m.get("content", ""))
-            log.info("Restored %d messages from previous session", len(msgs))
+            # Update the pointer
+            pointer = os.path.join(self._history_dir(), "current.txt")
+            with open(pointer, "w", encoding="utf-8") as f:
+                f.write(self.conversation_id)
+            log.info("Switched to conversation %s (%d msgs)", conv_id, len(self.messages))
+            self.conversation_changed.emit()
         except Exception as e:
-            log.error("Failed to load conversation: %s", e)
+            log.error("Failed to load conversation %s: %s", conv_id, e)
+
+    def list_conversations(self) -> list[dict]:
+        """Return metadata for all saved conversations, newest first."""
+        results = []
+        hist_dir = self._history_dir()
+        for fname in os.listdir(hist_dir):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(hist_dir, fname), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                results.append({
+                    "id": data.get("conversation_id", fname[:-5]),
+                    "title": data.get("title", "Untitled"),
+                    "updated_at": data.get("updated_at", ""),
+                    "msg_count": len(data.get("messages", [])),
+                })
+            except Exception:
+                continue
+        results.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        return results
 
     def clear_context(self):
+        # Save current before clearing (so it persists in history)
+        self.save_conversation()
+
         while self.chat_layout.count():
             child = self.chat_layout.takeAt(0)
             if child.widget():
@@ -967,15 +1055,8 @@ class ChatPanel(QWidget):
         self.conversation_id = str(uuid.uuid4())[:8]
         log.info(f"Context cleared. New Conversation ID: {self.conversation_id}")
 
-        # Remove saved conversation file
-        try:
-            path = self._conversation_file()
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-
         self.append_message_widget("system", "Context cleared. Starting new conversation.")
+        self.conversation_changed.emit()
 
     def _resolve_at_mentions(self, text: str) -> tuple[str, list[str]]:
         """Resolve @file references in the message text.
@@ -1113,6 +1194,22 @@ class ChatPanel(QWidget):
                 )
                 history_to_send.append({"role": "system", "content": phased_prompt})
         
+        # Auto-context: inject the currently open file and cursor position
+        if self._editor_context_getter and user_text is not None:
+            try:
+                ctx = self._editor_context_getter()
+                if ctx:
+                    ctx_msg = (
+                        f"[EDITOR CONTEXT — auto-attached, not typed by user]\n"
+                        f"Currently open file: {ctx['file']}  "
+                        f"(line {ctx['line']}, col {ctx['col']}, "
+                        f"{ctx['total_lines']} total lines)\n"
+                        f"Code around cursor:\n```\n{ctx['snippet']}\n```"
+                    )
+                    history_to_send.append({"role": "system", "content": ctx_msg})
+            except Exception:
+                pass
+
         # Token-aware history truncation: keep as many recent messages as
         # fit within ~75% of the typical context window, leaving room for
         # system prompts, attachments, and the AI's response.

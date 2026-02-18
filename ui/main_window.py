@@ -16,6 +16,8 @@ from ui.chat_panel import ChatPanel
 from ui.editor_panel import EditorPanel
 from ui.file_tree_panel import FileTreePanel
 from ui.debug_drawer import DebugDrawer
+from ui.search_panel import SearchPanel
+from ui.history_sidebar import HistorySidebar
 from core.runner import Runner
 from core.agent_tools import set_project_root, get_resource_path
 
@@ -134,6 +136,9 @@ class CodingAgentIDE(QMainWindow):
         self.editor_panel = EditorPanel()
         self.editor_panel.run_requested.connect(self.run_script)
 
+        # Give the chat panel access to the active editor context
+        self.chat_panel._editor_context_getter = self.editor_panel.get_active_context
+
         self.tree_panel = FileTreePanel(start_path=self.project_path)
         self.tree_panel.file_double_clicked.connect(self.editor_panel.load_file)
         self.tree_panel.file_created.connect(self.editor_panel.load_file)
@@ -141,12 +146,25 @@ class CodingAgentIDE(QMainWindow):
         self.tree_panel.file_renamed.connect(
             lambda old, new: (self.tree_panel.refresh(),
                               self.editor_panel.load_file(new)))
+        self.tree_panel.git_diff_requested.connect(self._show_git_diff)
 
         self.debug_drawer = DebugDrawer(self)
         self.debug_drawer.hide()
         self.debug_drawer.setStyleSheet(
             "border-left: 1px solid #3E3E42; background-color: #1E1E1E;")
         self.debug_drawer.send_to_agent.connect(self.handle_debug_output_to_chat)
+
+        # Project-wide search
+        self.search_panel = SearchPanel(self)
+        self.search_panel.file_requested.connect(self._open_search_result)
+
+        # Conversation history sidebar
+        self.history_sidebar = HistorySidebar(self)
+        self.history_sidebar.conversation_selected.connect(
+            self.chat_panel.switch_conversation)
+        self.history_sidebar.new_conversation.connect(
+            self.chat_panel.clear_context)
+        self.chat_panel.conversation_changed.connect(self._refresh_history)
 
         # Toolbar
         self.create_global_toolbar()
@@ -155,15 +173,22 @@ class CodingAgentIDE(QMainWindow):
         # Splitters
         self.main_splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(self.main_splitter)
-        self.main_splitter.addWidget(self.chat_panel)
+
+        # Left pane: history sidebar + chat
+        self.left_splitter = QSplitter(Qt.Horizontal)
+        self.left_splitter.addWidget(self.history_sidebar)
+        self.left_splitter.addWidget(self.chat_panel)
+        self.left_splitter.setSizes([0, 300])
+        self.main_splitter.addWidget(self.left_splitter)
 
         self.right_splitter = QSplitter(Qt.Vertical)
         self.main_splitter.addWidget(self.right_splitter)
         self.right_splitter.addWidget(self.editor_panel)
+        self.right_splitter.addWidget(self.search_panel)
         self.right_splitter.addWidget(self.tree_panel)
 
         self.main_splitter.setSizes([300, 900])
-        self.right_splitter.setSizes([600, 200])
+        self.right_splitter.setSizes([500, 0, 200])
 
         # Status bar
         self._setup_status_bar()
@@ -176,6 +201,10 @@ class CodingAgentIDE(QMainWindow):
             self._open_command_palette)
         QShortcut(QKeySequence("Ctrl+`"), self).activated.connect(
             self._toggle_debug_drawer)
+        QShortcut(QKeySequence("Ctrl+Shift+F"), self).activated.connect(
+            self._toggle_search_panel)
+        QShortcut(QKeySequence("Ctrl+H"), self).activated.connect(
+            self._toggle_history_sidebar)
 
         # Project selection
         self.select_project_folder()
@@ -184,6 +213,7 @@ class CodingAgentIDE(QMainWindow):
             self.tree_panel.set_root_path(self.project_path)
             self.settings_manager.set_last_project_path(self.project_path)
         set_project_root(self.project_path)
+        self.search_panel.set_root(self.project_path)
 
     # ------------------------------------------------------------------
     # Status bar
@@ -258,6 +288,8 @@ class CodingAgentIDE(QMainWindow):
             ("Run Script…", self.select_and_run_script),
             ("Settings…", self.open_settings),
             ("Toggle Debug Panel", self._toggle_debug_drawer),
+            ("Search in Project  (Ctrl+Shift+F)", self._toggle_search_panel),
+            ("Conversation History  (Ctrl+H)", self._toggle_history_sidebar),
             ("Find & Replace", self.editor_panel._toggle_find),
             ("Clear Chat Context", self.chat_panel.clear_context),
             ("Export Conversation…", self._export_conversation),
@@ -272,6 +304,68 @@ class CodingAgentIDE(QMainWindow):
 
     def _toggle_debug_drawer(self):
         self.debug_drawer.setVisible(not self.debug_drawer.isVisible())
+
+    # ------------------------------------------------------------------
+    # Project-wide search
+    # ------------------------------------------------------------------
+    def _toggle_search_panel(self):
+        self.search_panel.toggle()
+        if self.search_panel.isVisible():
+            sizes = self.right_splitter.sizes()
+            if sizes[1] < 120:
+                sizes[1] = 250
+                sizes[0] = max(sizes[0] - 250, 200)
+                self.right_splitter.setSizes(sizes)
+
+    def _open_search_result(self, path: str, line: int):
+        self.editor_panel.load_file(path)
+        editor = self.editor_panel.tabs.currentWidget()
+        if editor and hasattr(editor, 'textCursor'):
+            from PySide6.QtGui import QTextCursor
+            block = editor.document().findBlockByLineNumber(line - 1)
+            cursor = editor.textCursor()
+            cursor.setPosition(block.position())
+            editor.setTextCursor(cursor)
+            editor.centerCursor()
+
+    # ------------------------------------------------------------------
+    # Conversation history sidebar
+    # ------------------------------------------------------------------
+    def _toggle_history_sidebar(self):
+        self.history_sidebar.toggle()
+        if self.history_sidebar.isVisible():
+            sizes = self.left_splitter.sizes()
+            if sizes[0] < 120:
+                self.left_splitter.setSizes([200, max(sizes[1], 200)])
+            self._refresh_history()
+
+    def _refresh_history(self):
+        convos = self.chat_panel.list_conversations()
+        self.history_sidebar.refresh(convos, self.chat_panel.conversation_id)
+
+    # ------------------------------------------------------------------
+    # Interactive git diff viewer
+    # ------------------------------------------------------------------
+    def _show_git_diff(self, file_path: str):
+        """Run git diff on a file and display the result in an editor tab."""
+        root = self.project_path or os.getcwd()
+        try:
+            # Try staged + unstaged combined view
+            result = subprocess.run(
+                ["git", "diff", "HEAD", "--", file_path],
+                cwd=root, capture_output=True, text=True, timeout=5)
+            diff_text = result.stdout.strip()
+            if not diff_text:
+                # Might be untracked — show full file as addition
+                result = subprocess.run(
+                    ["git", "diff", "--no-index", "/dev/null", file_path],
+                    cwd=root, capture_output=True, text=True, timeout=5)
+                diff_text = result.stdout.strip()
+            if not diff_text:
+                diff_text = "(No differences found)"
+            self.editor_panel.show_diff(file_path, diff_text)
+        except Exception as e:
+            log.error("Git diff failed for %s: %s", file_path, e)
 
     # ------------------------------------------------------------------
     # Desktop notifications
@@ -502,6 +596,7 @@ class CodingAgentIDE(QMainWindow):
             self.tree_panel.set_root_path(folder)
             os.chdir(folder)
             set_project_root(folder)
+            self.search_panel.set_root(folder)
             self.setWindowTitle(f"VoxAI Coding Agent IDE — {folder}")
             self.chat_panel.clear_context()
             self.chat_panel.add_message("system", f"Switched project to: {folder}")
@@ -602,6 +697,10 @@ class CodingAgentIDE(QMainWindow):
                             QKeySequence("Ctrl+Shift+P"))
         view_menu.addAction("Toggle Debug Panel", self._toggle_debug_drawer,
                             QKeySequence("Ctrl+`"))
+        view_menu.addAction("Search in Project", self._toggle_search_panel,
+                            QKeySequence("Ctrl+Shift+F"))
+        view_menu.addAction("Conversation History", self._toggle_history_sidebar,
+                            QKeySequence("Ctrl+H"))
         view_menu.addAction("Terminal Mode", self._enter_terminal_mode)
 
         options_menu = menu.addMenu("&Options")

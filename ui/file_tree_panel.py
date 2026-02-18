@@ -97,6 +97,7 @@ class FileTreePanel(QWidget):
     file_created = Signal(str)
     file_deleted = Signal(str)
     file_renamed = Signal(str, str)
+    git_diff_requested = Signal(str)  # file_path
 
     def __init__(self, start_path=None, parent=None):
         super().__init__(parent)
@@ -195,6 +196,10 @@ class FileTreePanel(QWidget):
             menu.addSeparator()
             menu.addAction("Reveal in Explorer",
                            lambda: self._reveal(path))
+            if not is_dir and self._git_cache.get_status(path):
+                menu.addSeparator()
+                menu.addAction("Show Git Diff",
+                               lambda: self.git_diff_requested.emit(path))
         else:
             root = self.model.rootPath()
             menu.addAction("New File…", lambda: self._new_file(root))

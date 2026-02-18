@@ -627,6 +627,38 @@ class EditorPanel(QWidget):
         elif current and getattr(current, 'file_path', None):
             self.run_requested.emit(current.file_path)
 
+    def get_active_context(self) -> dict | None:
+        """Return the currently focused file's path, cursor position, and nearby lines."""
+        editor = self.tabs.currentWidget()
+        if not isinstance(editor, CodeEditor):
+            return None
+        path = getattr(editor, 'file_path', None)
+        if not path:
+            return None
+
+        cursor = editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+
+        # Grab a window of code around the cursor (±15 lines)
+        text = editor.toPlainText()
+        lines = text.splitlines()
+        start = max(0, line - 16)
+        end = min(len(lines), line + 15)
+        snippet_lines = []
+        for i in range(start, end):
+            marker = " >> " if i == line - 1 else "    "
+            snippet_lines.append(f"{i+1:4d}{marker}{lines[i]}")
+        snippet = "\n".join(snippet_lines)
+
+        return {
+            "file": path,
+            "line": line,
+            "col": col,
+            "total_lines": len(lines),
+            "snippet": snippet,
+        }
+
     # --- Diff viewing ---
     def show_diff(self, file_path: str, diff_text: str):
         if not diff_text or not diff_text.strip():

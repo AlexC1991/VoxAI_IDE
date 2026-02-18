@@ -52,16 +52,20 @@ Standard AI editors suggest code; **VoxAI builds software**.
 - **Code Folding** — Double-click the line number gutter to collapse/expand blocks.
 - **File Watcher** — Open tabs auto-reload when files change on disk (from AI tools, git, or external editors).
 - **Diff Viewer** — Color-coded unified diffs in dedicated tabs. Batch multiple diffs from a single tool run.
+- **Project-Wide Search** — `Ctrl+Shift+F` opens a grep-style search across all project files with regex, case-sensitivity, and file-type filters. Double-click results to jump to the exact line.
 
 ### File Explorer
 
 - **Git Status Indicators** — Colored dots show modified (yellow), added (green), untracked (blue), deleted (red) files.
-- **Context Menus** — Right-click for: New File, New Folder, Rename, Delete, Copy Path, Copy Relative Path, Reveal in Explorer.
+- **Interactive Git Diff** — Right-click any changed file and select "Show Git Diff" to see the full color-coded diff in the editor.
+- **Context Menus** — Right-click for: New File, New Folder, Rename, Delete, Copy Path, Copy Relative Path, Reveal in Explorer, Show Git Diff.
 - **Filter Bar** — Type to filter files by name in real-time.
 
 ### Chat Panel
 
+- **Auto-Context** — The currently open file, cursor position, and surrounding code are automatically attached to every AI message for precise, context-aware responses.
 - **@-mention Context** — Type `@filename.py` in the input to auto-attach file contents as context.
+- **Conversation History** — `Ctrl+H` opens a sidebar listing all saved conversations. Click to switch, create new ones, or delete old sessions. Conversations auto-save and persist across restarts.
 - **Attachments** — Attach images (multimodal) or text files via the paperclip button.
 - **Copy / Regenerate** — Every message has a "Copy" button. AI messages have "Regenerate" to re-run.
 - **Apply / Reject Workflow** — Proposed file changes show a diff preview and require approval (unless auto-approve is enabled or Siege Mode is active).
@@ -141,8 +145,10 @@ VoxAI_IDE/
 │   ├── chat_panel.py          # Chat interface, AI/tool workers
 │   ├── editor_panel.py        # Tabbed editor, find/replace, folding
 │   ├── file_tree_panel.py     # Explorer with git status & context menus
-│   ├── settings_dialog.py     # Settings UI
+│   ├── settings_dialog.py     # Settings UI (tabbed)
 │   ├── model_manager.py       # GGUF model manager dialog
+│   ├── search_panel.py        # Project-wide search (Ctrl+Shift+F)
+│   ├── history_sidebar.py     # Conversation history browser (Ctrl+H)
 │   ├── debug_drawer.py        # Terminal output panel
 │   ├── crash_reporter.py      # Crash dialog
 │   └── widgets/
@@ -249,6 +255,8 @@ Or on Windows:
 | Shortcut | Action |
 |:---------|:-------|
 | `Ctrl+Shift+P` | Command Palette |
+| `Ctrl+Shift+F` | Search in Project |
+| `Ctrl+H` | Conversation History |
 | `Ctrl+F` | Find & Replace |
 | `Ctrl+S` | Save file |
 | `Ctrl+O` | Open file |
