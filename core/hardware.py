@@ -69,7 +69,7 @@ def get_hardware_config(api_root=None):
                 "busy_wait": "0"          
             })
             log.info("High-Performance Driver (CUDA/ZLUDA) Loaded.")
-        except:
+        except OSError:
             log.warning("CUDA Driver found but failed to load. Staying on APU.")
 
     os.environ["GGML_VK_FORCE_BUSY_WAIT"] = config["busy_wait"]

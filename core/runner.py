@@ -1,8 +1,15 @@
 from PySide6.QtCore import QObject, Signal, QProcess, QProcessEnvironment
+import sys
+import os
+import tempfile
+import logging
+
+log = logging.getLogger(__name__)
+
 
 class Runner(QObject):
     execution_started = Signal(str)
-    output_received = Signal(str, bool) # text, is_error
+    output_received = Signal(str, bool)  # text, is_error
     execution_finished = Signal(int)
 
     def __init__(self):
@@ -11,120 +18,105 @@ class Runner(QObject):
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.on_finished)
+        self._temp_exe: str | None = None
 
     def run_script(self, script_path):
         if self.process.state() == QProcess.Running:
-            print("[Runner] Process already running. Terminating...")
+            log.info("Process already running — terminating")
             self.process.kill()
-            self.process.waitForFinished(1000) # Wait up to 1s
-            
+            self.process.waitForFinished(1000)
+
+        self._cleanup_temp()
         self.execution_started.emit(script_path)
-        
-        # Set environment to force unbuffered output
+
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         self.process.setProcessEnvironment(env)
-        
-        # Start process based on extension
-        import sys
-        import os
-        
+
         _, ext = os.path.splitext(script_path)
         ext = ext.lower()
-        
+
         if ext == '.py':
-            python_exe = sys.executable
-            
-            # Smart Venv Detection
-            # Check if there's a venv in the script's directory or project root
-            # This is a bit tricky since we don't strictly know "Project Root" here, 
-            # but we can assume the script is likely inside the project.
-            
-            script_dir = os.path.dirname(os.path.abspath(script_path))
-            start_dir = script_dir
-            found_venv = False
-            
-            # Climb up 3 levels to find venv
-            for _ in range(3):
-                for venv_name in [".venv", "venv", "env"]:
-                    venv_path = os.path.join(start_dir, venv_name)
-                    if os.path.isdir(venv_path):
-                        # Windows specific check
-                        candidate = os.path.join(venv_path, "Scripts", "python.exe")
-                        if os.path.exists(candidate):
-                            python_exe = candidate
-                            print(f"[Runner] Using Venv Python: {python_exe}")
-                            found_venv = True
-                            break
-                        # Linux/Mac check (Scripts vs bin)
-                        candidate = os.path.join(venv_path, "bin", "python")
-                        if os.path.exists(candidate):
-                            python_exe = candidate
-                            print(f"[Runner] Using Venv Python: {python_exe}")
-                            found_venv = True
-                            break
-                if found_venv: break
-                parent = os.path.dirname(start_dir)
-                if parent == start_dir: break # Root reached
-                start_dir = parent
-                
+            python_exe = self._find_python(script_path)
             self.process.start(python_exe, [script_path])
-        
-        elif ext in ['.js', '.mjs', '.cjs']:
+
+        elif ext in ('.js', '.mjs', '.cjs'):
             self.process.start("node", [script_path])
-            
+
         elif ext == '.ts':
-            # Check if ts-node is available, or use node with loader, or just try npx?
-            # Simplest for now: ts-node if installed, else error/fallback
-            # Let's assume user has `ts-node` in checks.
             self.process.start("ts-node", [script_path])
-            
+
         elif ext == '.go':
             self.process.start("go", ["run", script_path])
-            
+
         elif ext == '.rs':
-            # Rust needs compilation or `cargo run` if in project.
-            # Single file: rustc then run? Or use `cargo script` (experimental)?
-            # Simplest single file: rustc -o temp.exe main.rs && temp.exe
-            # But that's complex for a runner.
-            # Let's try `rustc` to a temp bin then run it?
-            # Or assume cargo is used if Cargo.toml exists?
-            # For a single .rs file script, we can compile to a temp dir.
-            import tempfile
-            exe_name = os.path.join(tempfile.gettempdir(), f"{os.path.basename(script_path)}.exe")
-            # We can't chain commands easily with QProcess unless we use shell.
-            # Let's use shell for Rust for now.
-            cmd = f"rustc \"{script_path}\" -o \"{exe_name}\" && \"{exe_name}\""
-            self.process.start("cmd.exe", ["/c", cmd])
-            
-        elif ext in ['.cpp', '.cc']:
-            # g++ or clang++
-            import tempfile
-            exe_name = os.path.join(tempfile.gettempdir(), f"{os.path.basename(script_path)}.exe")
-            cmd = f"g++ \"{script_path}\" -o \"{exe_name}\" && \"{exe_name}\""
-            self.process.start("cmd.exe", ["/c", cmd])
-            
+            self._run_compiled("rustc", script_path)
+
+        elif ext in ('.cpp', '.cc'):
+            self._run_compiled("g++", script_path)
+
         elif ext == '.c':
-            import tempfile
-            exe_name = os.path.join(tempfile.gettempdir(), f"{os.path.basename(script_path)}.exe")
-            cmd = f"gcc \"{script_path}\" -o \"{exe_name}\" && \"{exe_name}\""
-            self.process.start("cmd.exe", ["/c", cmd])
+            self._run_compiled("gcc", script_path)
 
         elif ext == '.java':
-            # Single file source code execution (Java 11+)
             self.process.start("java", [script_path])
-            
+
         elif ext == '.bat':
             self.process.start("cmd.exe", ["/c", script_path])
-        elif ext in ['.sh', '.bash']:
-            # Windows might have git bash or wsl.
-            # Try bash.
-            self.process.start("bash", [script_path])
+
+        elif ext in ('.sh', '.bash'):
+            shell = "bash" if os.name != "nt" else "wsl"
+            self.process.start(shell, [script_path])
+
         elif ext == '.ps1':
-             self.process.start("powershell", ["-File", script_path])
+            self.process.start("powershell", ["-File", script_path])
+
         else:
-            # Try to run directly (e.g. .exe or associated program)
             self.process.start(script_path, [])
+
+    def _find_python(self, script_path: str) -> str:
+        python_exe = sys.executable
+        script_dir = os.path.dirname(os.path.abspath(script_path))
+        search_dir = script_dir
+        for _ in range(3):
+            for venv_name in (".venv", "venv", "env"):
+                venv_path = os.path.join(search_dir, venv_name)
+                if not os.path.isdir(venv_path):
+                    continue
+                candidates = [
+                    os.path.join(venv_path, "Scripts", "python.exe"),
+                    os.path.join(venv_path, "bin", "python"),
+                ]
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        log.info("Using venv Python: %s", candidate)
+                        return candidate
+            parent = os.path.dirname(search_dir)
+            if parent == search_dir:
+                break
+            search_dir = parent
+        return python_exe
+
+    def _run_compiled(self, compiler: str, script_path: str):
+        """Compile-then-run for C/C++/Rust — cross-platform."""
+        suffix = ".exe" if os.name == "nt" else ""
+        exe_name = os.path.join(tempfile.gettempdir(),
+                                f"voxai_run_{os.path.basename(script_path)}{suffix}")
+        self._temp_exe = exe_name
+        if os.name == "nt":
+            chain = f'{compiler} "{script_path}" -o "{exe_name}" && "{exe_name}"'
+            self.process.start("cmd.exe", ["/c", chain])
+        else:
+            chain = f'{compiler} "{script_path}" -o "{exe_name}" && "{exe_name}"'
+            self.process.start("sh", ["-c", chain])
+
+    def _cleanup_temp(self):
+        if self._temp_exe and os.path.exists(self._temp_exe):
+            try:
+                os.remove(self._temp_exe)
+            except OSError:
+                pass
+        self._temp_exe = None
 
     def handle_stdout(self):
         data = self.process.readAllStandardOutput()
@@ -137,4 +129,5 @@ class Runner(QObject):
         self.output_received.emit(text.strip(), True)
 
     def on_finished(self, exit_code, exit_status):
+        self._cleanup_temp()
         self.execution_finished.emit(exit_code)

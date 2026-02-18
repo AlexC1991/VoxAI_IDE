@@ -1,6 +1,5 @@
 
 import os
-import sys
 import logging
 import threading
 import contextlib
@@ -12,38 +11,37 @@ log = logging.getLogger(__name__)
 @contextlib.contextmanager
 def suppress_c_output():
     """
-    Redirects C-level stdout and stderr to os.devnull.
-    Useful for silencing noisy C/C++ libraries like llama.cpp.
+    Redirects C-level stdout/stderr to devnull to silence llama.cpp init spam.
+    Each fd operation is individually guarded so a partial failure won't break I/O.
     """
+    null_fd = None
+    save_stdout_fd = None
+    save_stderr_fd = None
     try:
-        # Open the null device
         null_fd = os.open(os.devnull, os.O_RDWR)
-        
-        # Save original file descriptors
         save_stdout_fd = os.dup(1)
         save_stderr_fd = os.dup(2)
-        
-        # Redirect stdout and stderr to null
         os.dup2(null_fd, 1)
         os.dup2(null_fd, 2)
-        
+    except OSError:
+        pass
+
+    try:
         yield
-        
-    except Exception:
-        # If anything goes wrong, yield anyway so app doesn't crash
-        yield
-        
     finally:
-        # Restore safe fds
         try:
-            os.dup2(save_stdout_fd, 1)
-            os.dup2(save_stderr_fd, 2)
-            
-            os.close(null_fd)
-            os.close(save_stdout_fd)
-            os.close(save_stderr_fd)
-        except:
-             pass
+            if save_stdout_fd is not None:
+                os.dup2(save_stdout_fd, 1)
+            if save_stderr_fd is not None:
+                os.dup2(save_stderr_fd, 2)
+        except OSError:
+            pass
+        for fd in (null_fd, save_stdout_fd, save_stderr_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 class VoxLocalEmbedder:
     _instance = None
@@ -96,51 +94,54 @@ class VoxLocalEmbedder:
         log.info(f"Initializing VoxLocal Engine ({mode}) with model: {model_path}")
         
         try:
-            # Removed suppress_c_output for Windows stability
-            self.llm = Llama(
-                model_path=model_path,
-                n_ctx=2048,
-                embedding=True,
-                n_gpu_layers=self.config['n_gpu_layers'],
-                n_threads=self.config['n_threads'],
-                n_threads_batch=self.config['n_threads_batch'],
-                n_batch=self.config['n_batch'],
-                flash_attn=self.config['flash_attn'],
-                use_mlock=self.config['use_mlock'],
-                cache_type_k=self.config['cache_type_k'],
-                cache_type_v=self.config['cache_type_v'],
-                verbose=False # Still set this
-            )
+            with suppress_c_output():
+                self.llm = Llama(
+                    model_path=model_path,
+                    n_ctx=2048,
+                    embedding=True,
+                    n_gpu_layers=self.config['n_gpu_layers'],
+                    n_threads=self.config['n_threads'],
+                    n_threads_batch=self.config['n_threads_batch'],
+                    n_batch=self.config['n_batch'],
+                    flash_attn=self.config['flash_attn'],
+                    use_mlock=self.config['use_mlock'],
+                    cache_type_k=self.config['cache_type_k'],
+                    cache_type_v=self.config['cache_type_v'],
+                    verbose=False,
+                )
             log.info("VoxLocal Engine Online.")
         except Exception as e:
             log.error(f"Failed to load VoxLocal Engine: {e}")
-            print(f"VoxLocal Engine Load Error: {e}")
 
     def embed(self, texts):
         if not self.llm:
+            log.warning("Embed called but no model loaded.")
             return None
         
         if isinstance(texts, str):
             texts = [texts]
-            
+
+        log.debug("Embedding %d text(s) (total %d chars)", len(texts), sum(len(t) for t in texts))
         vectors = []
         with self._lock:
-            # Removed suppress_c_output for Windows stability
-            for text in texts:
-                try:
-                    vector = self.llm.embed(text)
-                    
-                    if vector and isinstance(vector[0], list):
-                        vector = vector[0]
-                    
-                    v_np = np.array(vector, dtype=np.float32)
-                    norm = np.linalg.norm(v_np)
-                    if norm > 0:
-                        v_np = v_np / norm
-                    vector = v_np.tolist()
+            with suppress_c_output():
+                for text in texts:
+                    try:
+                        vector = self.llm.embed(text)
                         
-                    vectors.append(vector)
-                except Exception as e:
-                    log.error(f"Embedding failed for text fragment: {e}")
-            
+                        if vector and isinstance(vector[0], list):
+                            vector = vector[0]
+                        
+                        v_np = np.array(vector, dtype=np.float32)
+                        norm = np.linalg.norm(v_np)
+                        if norm > 0:
+                            v_np = v_np / norm
+                        vector = v_np.tolist()
+                            
+                        vectors.append(vector)
+                    except Exception as e:
+                        log.error(f"Embedding failed for text fragment: {e}")
+
+        log.debug("Embedding complete: %d vectors produced (dim=%d)",
+                  len(vectors), len(vectors[0]) if vectors else 0)
         return vectors

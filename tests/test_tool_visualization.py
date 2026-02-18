@@ -42,7 +42,7 @@ class TestToolVisualization(unittest.TestCase):
         # ChatPanel init creates layout.
         
         with patch.object(panel, 'append_message_widget') as mock_append:
-            tools = [("list_files", {"path": "."})]
+            tools = [{"cmd": "list_files", "args": {"path": "."}}]
             panel._start_tool_execution(tools)
             
             # Verify usage log

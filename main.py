@@ -52,7 +52,16 @@ def main():
     window = CodingAgentIDE()
     window.show()
     log.info("Starting Main Loop...")
-    sys.exit(app.exec())
+    exit_code = app.exec()
+
+    # Gracefully stop the RAG server if it was started
+    try:
+        from core.rag_client import RAGClient
+        RAGClient.shutdown_server()
+    except Exception:
+        pass
+
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

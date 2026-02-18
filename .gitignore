@@ -1,14 +1,41 @@
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *$py.class
-*.log
-crash.log
-.idea/
-.vscode/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== Virtual environments =====
+.venv/
 venv/
 env/
+
+# ===== IDE / Editor =====
+.idea/
+.vscode/
+.cursor/
 .gemini/
-keys/secrets.json
+*.swp
+*.swo
+*~
+
+# ===== Logs & runtime =====
+*.log
+crash.log
+debug.log
+
+# ===== VoxAI runtime data =====
 .vox/
+storage/
+Vox_RIG/storage/
+Vox_RIG/vox_storage/
+Vox_RIG/search_engine/scripts/.cache/
+
+# ===== Secrets =====
+keys/secrets.json
+
+# ===== Local GGUF models (large binaries) =====
 models/llm/*.gguf
 !models/llm/.gitkeep

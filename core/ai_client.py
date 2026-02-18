@@ -85,6 +85,43 @@ class AIClient:
         "Local": "local_file"
     }
 
+    _llm_cache = {}  # class-level: {model_name: Llama instance}
+
+    @classmethod
+    def _get_local_llm(cls, model_name):
+        """Returns a cached Llama instance, loading it only on first use or model change."""
+        from llama_cpp import Llama
+
+        if model_name in cls._llm_cache:
+            log.debug("Reusing cached GGUF model: %s", model_name)
+            return cls._llm_cache[model_name]
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        model_path = os.path.join(base_dir, "models", "llm", model_name)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found at {model_path}")
+
+        log.info("Loading GGUF model (first use): %s", model_path)
+
+        try:
+            from core.hardware import get_hardware_config
+            _, hw, _ = get_hardware_config()
+        except Exception:
+            hw = {"n_gpu_layers": -1, "n_threads": 4, "n_batch": 512, "flash_attn": False}
+
+        llm = Llama(
+            model_path=model_path,
+            n_ctx=4096,
+            n_gpu_layers=hw.get("n_gpu_layers", -1),
+            n_threads=hw.get("n_threads", 4),
+            n_batch=hw.get("n_batch", 512),
+            flash_attn=hw.get("flash_attn", False),
+            verbose=False,
+        )
+        cls._llm_cache[model_name] = llm
+        log.info("GGUF model loaded and cached: %s", model_name)
+        return llm
+
     def __init__(self):
         self.settings_manager = SettingsManager()
         
@@ -170,8 +207,9 @@ class AIClient:
             # If local_url ends with /v1, we append /chat/completions
             if local_url.endswith("/v1"):
                 return f"{local_url}/chat/completions"
-            return f"{local_url}/chat/completions" # Hope for the best or assume full URL?
-            # Safer: specific logic for local
+            if "/chat/completions" in local_url:
+                return local_url
+            return f"{local_url}/v1/chat/completions"
             
         return url
 
@@ -222,44 +260,41 @@ class AIClient:
             
         elif fmt == "anthropic":
             # Anthropic Format
-            system_msg = ""
+            system_parts = []
             filtered_msgs = []
             
             for m in messages:
                 if m["role"] == "system":
-                    system_msg = m["content"]
+                    system_parts.append(m["content"])
                 else:
-                    # Deep copy to avoid mutating original
                     new_m = m.copy()
                     
-                    # Convert OpenAI multimodal format to Anthropic if needed
                     if isinstance(new_m["content"], list):
                         new_content = []
                         for block in new_m["content"]:
                             if block.get("type") == "image_url":
-                                # Convert: image_url -> image source
-                                url = block["image_url"]["url"]
-                                if url.startswith("data:"):
-                                    # Parse data:image/png;base64,.....
+                                img_url = block["image_url"]["url"]
+                                if img_url.startswith("data:"):
                                     try:
-                                        header, data = url.split("base64,")
-                                        # header is "data:image/png;"
+                                        header, b64data = img_url.split("base64,")
                                         mime = header.replace("data:", "").replace(";", "")
                                         new_content.append({
                                             "type": "image",
                                             "source": {
                                                 "type": "base64",
                                                 "media_type": mime,
-                                                "data": data
+                                                "data": b64data
                                             }
                                         })
-                                    except:
-                                        pass # Malformed data uri?
+                                    except (ValueError, IndexError):
+                                        pass
                             else:
                                 new_content.append(block)
                         new_m["content"] = new_content
                         
                     filtered_msgs.append(new_m)
+            
+            system_msg = "\n\n".join(system_parts)
             
             payload = {
                 "model": self.model,
@@ -274,8 +309,19 @@ class AIClient:
             try:
                 # log.debug(f"Sending request to {url} with model {self.model}")
                 with requests.post(url, headers=headers, json=payload, stream=True) as response:
-                    response.raise_for_status()
-                    
+                    try:
+                        response.raise_for_status()
+                    except requests.exceptions.HTTPError as e:
+                        try:
+                            error_body = response.json()
+                            if "error" in error_body:
+                                if isinstance(error_body["error"], dict) and "message" in error_body["error"]:
+                                    raise Exception(f"{e} - {error_body['error']['message']}") from e
+                                raise Exception(f"{e} - {error_body['error']}") from e
+                        except (json.JSONDecodeError, ValueError, KeyError):
+                            pass
+                        raise e
+
                     for line in response.iter_lines():
                         if not line:
                             continue
@@ -303,7 +349,7 @@ class AIClient:
                                     data = json.loads(data_str)
                                     if data["type"] == "content_block_delta":
                                         yield data["delta"]["text"]
-                                except:
+                                except (json.JSONDecodeError, KeyError, TypeError):
                                     pass
                                     
             except Exception as e:
@@ -316,53 +362,37 @@ class AIClient:
                             error_body = e.response.text
                             log.error(f"API Error Body: {error_body}")
                             error_msg += f"\nServer Response: {error_body}"
-                        except:
+                        except Exception:
                             pass
                 
                 log.error(error_msg)
                 yield f"\n[Error: {error_msg}]\n"
 
         if self.provider == "local_file":
-            # GGUF Inference via llama-cpp-python
+            # GGUF Inference via llama-cpp-python (singleton-cached model)
             try:
-                from llama_cpp import Llama
-                
-                # Construct path
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                model_path = os.path.join(base_dir, "models", "llm", self.model)
-                
-                if not os.path.exists(model_path):
-                    yield f"\n[Error: Model file not found at {model_path}]\n"
-                    return
+                llm = AIClient._get_local_llm(self.model)
 
-                # Hardware config (reuse from hardware.py or defaults)
-                # For now, safe defaults or minimal config
-                
-                log.info(f"Loading local model: {model_path}")
-                # We should probably cache this instance in a singleton manager to avoid reload lag
-                # For now, simple load per request (inefficient but works for proof of concept)
-                
-                llm = Llama(
-                    model_path=model_path,
-                    n_ctx=4096, # decent context
-                    n_gpu_layers=-1, # Try to offload all to GPU if available (requires proper pip install)
-                    verbose=True
-                )
-                
-                # Format messages
-                # Simple chat format or raw? Llama-cpp-python has create_chat_completion
-                
+                flat_messages = []
+                for m in messages:
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = "\n".join(
+                            block.get("text", "") for block in c if block.get("type") == "text"
+                        )
+                    flat_messages.append({"role": m["role"], "content": c})
+
                 stream = llm.create_chat_completion(
-                    messages=messages,
+                    messages=flat_messages,
                     stream=True
                 )
-                
+
                 for chunk in stream:
                     if "choices" in chunk and len(chunk["choices"]) > 0:
                         delta = chunk["choices"][0].get("delta", {})
                         if "content" in delta:
                             yield delta["content"]
-                            
+
             except ImportError:
                 yield "\n[Error: llama-cpp-python not installed. Please run `pip install llama-cpp-python`]\n"
             except Exception as e:
@@ -376,9 +406,100 @@ class AIClient:
         """
         try:
             from core.local_embeddings import VoxLocalEmbedder
-            # Use singleton instance to avoid reloading model
             embedder = VoxLocalEmbedder.get_instance()
-            return embedder.embed(texts)
+            result = embedder.embed(texts)
+            return result if result else []
         except Exception as e:
             log.error(f"Embedding failed: {e}")
+            return []
+
+    @staticmethod
+    def fetch_models(provider_id, api_key, local_url=None):
+        """
+        Fetches available models from the provider.
+        Returns a list of model IDs.
+        """
+        try:
+            # 1. Determine Base URL
+            config = AIClient.PROVIDER_CONFIG.get(provider_id)
+            if not config:
+                if provider_id == "local":
+                    config = AIClient.PROVIDER_CONFIG["local"]
+                else:
+                    return []
+
+            base_url = config["base_url"]
+            header_name = config["header"]
+
+            # Local URL override
+            if provider_id == "local":
+                if local_url:
+                    base_url = local_url
+                else:
+                    base_url = "http://localhost:11434"
+                
+                # Normalize typical Ollama/LocalAI endpoints
+                if base_url.endswith("/v1"):
+                    models_url = f"{base_url}/models"
+                else:
+                    # Try /api/tags (Ollama native) first, or assume /v1/models?
+                    # Let's try /v1/models if checking for compatibility
+                    # But if user put http://localhost:11434, might want api/tags
+                    models_url = f"{base_url}/api/tags"
+
+            else:
+                if not base_url or base_url.startswith("{"):
+                    return []
+                if provider_id == "google":
+                    models_url = "https://generativelanguage.googleapis.com/v1beta/models"
+                elif "/chat/completions" in base_url:
+                    models_url = base_url.replace("/chat/completions", "/models")
+                elif "/messages" in base_url:
+                    models_url = "https://api.anthropic.com/v1/models"
+                else:
+                    models_url = f"{base_url}/models"
+
+            # 2. Prepare Headers
+            headers = {}
+            if header_name and api_key:
+                if header_name == "Authorization":
+                    headers["Authorization"] = f"Bearer {api_key}"
+                else:
+                    headers[header_name] = api_key
+            
+            if provider_id == "anthropic":
+                headers["anthropic-version"] = "2023-06-01"
+
+            log.debug("Fetching models from %s", models_url)
+
+            if provider_id == "local" and "api/tags" in models_url:
+                response = requests.get(models_url, timeout=10)
+            else:
+                response = requests.get(models_url, headers=headers, timeout=10)
+
+            response.raise_for_status()
+            data = response.json()
+
+            model_ids = []
+
+            if "data" in data and isinstance(data["data"], list):
+                for item in data["data"]:
+                    if "id" in item:
+                        model_ids.append(item["id"])
+
+            elif "models" in data and isinstance(data["models"], list):
+                for item in data["models"]:
+                    if "name" in item:
+                        model_ids.append(item["name"])
+                    elif "id" in item:
+                        model_ids.append(item["id"])
+            else:
+                log.warning("Unknown model list format: %s", list(data.keys()))
+
+            return sorted(model_ids)
+
+        except Exception as e:
+            log.error("Error fetching models for %s: %s", provider_id, e)
+            if hasattr(e, "response") and e.response is not None:
+                log.error("Response body: %s", e.response.text)
             return []

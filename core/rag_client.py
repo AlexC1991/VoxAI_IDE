@@ -1,16 +1,22 @@
 
+import atexit
 import hashlib
 import json
+import logging
 import os
-import time
+import socket
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-# print("DEBUG: RAGClient module loaded from", __file__)
+import requests as _requests
 
 from core.settings import SettingsManager
 from core.ai_client import AIClient
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,36 +32,37 @@ class RetrievedChunk:
 
 class RAGClient:
     """
-    Local RAG client that talks to the Vox_AISearch Go vector engine over localhost.
+    Local RAG client that talks to the Vox_AISearch Go vector engine.
+    Prefers a persistent HTTP server on 127.0.0.1 (loopback only, no external
+    access). Falls back to subprocess-per-call if the server can't start.
     """
+
+    # Class-level server state — shared across all RAGClient instances
+    _server_process: Optional[subprocess.Popen] = None
+    _server_port: Optional[int] = None
+    _server_lock = threading.Lock()
+    _server_data_dir: Optional[str] = None
 
     def __init__(self):
         self.settings = SettingsManager()
         self.ai = AIClient()
-        
-        # 1. Base engine path (Go search engine)
+
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.go_dir = os.path.join(self.base_dir, "Vox_RIG", "search_engine")
-        
-        # Check for compiled binary first
+
         self.binary_path = os.path.join(self.go_dir, "vox-vector-engine.exe")
         self.use_binary = os.path.exists(self.binary_path)
 
-        # 2. Project-Local Storage Path (Per user request: like Claude)
-        # We need to find the project root dynamically or fallback to .vox/memory in current dir
         try:
             from core.agent_tools import get_project_root
             project_root = get_project_root()
         except ImportError:
-             project_root = os.getcwd()
+            project_root = os.getcwd()
 
         self.storage_dir = os.path.join(project_root, ".vox", "memory")
-        
-        # Ensure directory exists
-        if not os.path.exists(self.storage_dir):
-            os.makedirs(self.storage_dir, exist_ok=True)
+        os.makedirs(self.storage_dir, exist_ok=True)
 
-        # Find go executable (fallback if binary not found)
+        # CLI fallback — find Go executable
         self.go_exe = "go"
         if not self.use_binary:
             import shutil
@@ -63,97 +70,168 @@ class RAGClient:
             if found:
                 self.go_exe = found
             else:
-                # Check common paths
-                common_go_paths = [
+                for p in [
                     "C:\\Program Files\\Go\\bin\\go.exe",
                     "C:\\Go\\bin\\go.exe",
-                    os.path.expanduser("~\\go\\bin\\go.exe")
-                ]
-                for p in common_go_paths:
+                    os.path.expanduser("~\\go\\bin\\go.exe"),
+                ]:
                     if os.path.exists(p):
                         self.go_exe = p
                         break
 
+    # ------------------------------------------------------------------
+    # HTTP server lifecycle (127.0.0.1 only — loopback, no external access)
+    # ------------------------------------------------------------------
+    @classmethod
+    def _ensure_server(cls, binary_path: str, storage_dir: str) -> bool:
+        """Start the Go HTTP server on 127.0.0.1 if not already running."""
+        with cls._server_lock:
+            if (cls._server_process and cls._server_process.poll() is None
+                    and cls._server_data_dir == storage_dir):
+                return True
+
+            # Kill stale server if data dir changed (project switch)
+            cls._kill_server()
+
+            # Pick a free port on loopback
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+
+            addr = f"127.0.0.1:{port}"
+            cmd = [binary_path, "-addr", addr, "-data", storage_dir, "-dim", "768"]
+
+            try:
+                cls._server_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                   if os.name == "nt" else 0),
+                )
+            except Exception as e:
+                log.warning("Could not start RAG server: %s — falling back to CLI", e)
+                return False
+
+            # Wait for health check (up to 3 s)
+            for _ in range(30):
+                time.sleep(0.1)
+                try:
+                    r = _requests.get(f"http://127.0.0.1:{port}/health", timeout=0.3)
+                    if r.status_code == 200:
+                        cls._server_port = port
+                        cls._server_data_dir = storage_dir
+                        log.info("RAG server started on 127.0.0.1:%d (pid=%d)",
+                                 port, cls._server_process.pid)
+                        atexit.register(cls._kill_server)
+                        return True
+                except Exception:
+                    if cls._server_process.poll() is not None:
+                        log.warning("RAG server exited immediately — falling back to CLI")
+                        return False
+
+            log.warning("RAG server did not become healthy — falling back to CLI")
+            cls._kill_server()
+            return False
+
+    @classmethod
+    def _kill_server(cls):
+        if cls._server_process:
+            try:
+                cls._server_process.terminate()
+                cls._server_process.wait(timeout=3)
+            except Exception:
+                try:
+                    cls._server_process.kill()
+                except Exception:
+                    pass
+            cls._server_process = None
+            cls._server_port = None
+            cls._server_data_dir = None
+
+    @classmethod
+    def shutdown_server(cls):
+        """Public shutdown — call on app exit."""
+        cls._kill_server()
+
+    # ------------------------------------------------------------------
+    # Transport: HTTP (preferred) → CLI subprocess (fallback)
+    # ------------------------------------------------------------------
+    def _http_post(self, endpoint: str, payload: dict) -> Any:
+        """POST to the local HTTP server. Returns parsed JSON or None."""
+        if not self.use_binary:
+            return None
+        if not RAGClient._ensure_server(self.binary_path, self.storage_dir):
+            return None
+        port = RAGClient._server_port
+        if not port:
+            return None
+        try:
+            r = _requests.post(
+                f"http://127.0.0.1:{port}{endpoint}",
+                json=payload,
+                timeout=10,
+            )
+            if r.status_code == 200:
+                return r.json()
+            log.debug("RAG HTTP %s returned %d: %s", endpoint, r.status_code, r.text[:200])
+            return None
+        except Exception as e:
+            log.debug("RAG HTTP %s failed: %s", endpoint, e)
+            return None
+
+    def _run_cli(self, cmd_name: str, payload: dict) -> Any:
+        """Subprocess fallback — executes the Go CLI with JSON via STDIN."""
+        try:
+            if self.use_binary:
+                cmd = [self.binary_path, "-cmd", cmd_name,
+                       "-data", self.storage_dir, "-dim", "768"]
+            else:
+                cmd = [self.go_exe, "run", "./cmd/cli",
+                       "-cmd", cmd_name, "-data", self.storage_dir, "-dim", "768"]
+
+            result = subprocess.run(
+                cmd,
+                cwd=self.go_dir if not self.use_binary else None,
+                input=json.dumps(payload),
+                capture_output=True, text=True, check=False, encoding="utf-8",
+                creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                               if os.name == "nt" else 0),
+            )
+
+            if result.returncode != 0:
+                log.debug("RAG CLI '%s' exited %d", cmd_name, result.returncode)
+                if result.stderr:
+                    log.debug("RAG CLI stderr: %s", result.stderr.strip()[:200])
+                return None
+
+            output = result.stdout.strip()
+            if not output:
+                return {}
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError:
+                for line in reversed(output.split("\n")):
+                    line = line.strip()
+                    if line.startswith("{") and line.endswith("}"):
+                        try:
+                            return json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                log.warning("RAG CLI '%s': unparsable stdout: %s", cmd_name, output[:120])
+                return None
+        except Exception as e:
+            log.error("RAG CLI exception (%s): %s", cmd_name, e)
+            return None
+
     def _project_namespace(self) -> str:
-        """
-        Creates a stable namespace for the current PROJECT root.
-        """
+        """Derives a stable namespace key from the current project root."""
         try:
             from core.agent_tools import get_project_root
             root = get_project_root()
         except ImportError:
             root = os.getcwd()
-            
-        h = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
-        return f"project:{h}"
-
-    def _run_cli(self, cmd_name: str, payload: dict) -> Any:
-        """Executes the Go CLI with a JSON payload via STDIN."""
-        
-        try:
-            if self.use_binary:
-                cmd = [
-                    self.binary_path,
-                    "-cmd", cmd_name,
-                    "-data", self.storage_dir,
-                    "-dim", "768"
-                ]
-            else:
-                # Fallback to 'go run'
-                cmd = [
-                    self.go_exe, "run", "./cmd/cli",
-                    "-cmd", cmd_name,
-                    "-data", self.storage_dir,
-                    "-dim", "768"
-                ]
-            
-            payload_json = json.dumps(payload)
-            
-            # Run command
-            result = subprocess.run(
-                cmd,
-                cwd=self.go_dir if not self.use_binary else None, # If binary, cwd doesn't matter as much, but safest to be consistent
-                input=payload_json,
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                # On Windows, prevent popups
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == 'nt' else 0
-            )
-            
-            if result.returncode != 0:
-                # print(f"[RAG CLI Error] Cmd: {cmd_name} | Return code {result.returncode}")
-                if result.stderr:
-                    # print(f"[RAG CLI Stderr] {result.stderr}")
-                    pass
-                return None
-            
-            # The Go CLI might print log messages to stderr, but stdout should be pure JSON
-            output = result.stdout.strip()
-            if not output:
-                return {}
-
-            try:
-                return json.loads(output)
-            except json.JSONDecodeError:
-                # Fallback: sometimes Go might print non-JSON to stdout if we aren't careful?
-                # or maybe multiple JSON objects?
-                # Let's try to find the last valid JSON object line
-                lines = output.split('\n')
-                for line in reversed(lines):
-                    line = line.strip()
-                    if line.startswith('{') and line.endswith('}'):
-                        try:
-                            return json.loads(line)
-                        except:
-                            continue
-                # print(f"[RAG CLI Error] Could not parse JSON from stdout: {output[:100]}...")
-                return None
-
-        except Exception as e:
-            # print(f"[RAG CLI Exception] {e}")
-            return None
+        return hashlib.sha256(root.encode()).hexdigest()[:16]
 
     def retrieve(self, query_text: str, k: int = 5, max_tokens: int = 8192) -> List[RetrievedChunk]:
         """
@@ -162,22 +240,22 @@ class RAGClient:
         if not query_text.strip():
             return []
 
+        log.debug("RAG retrieve: query=%s... k=%d budget=%d tokens",
+                  query_text[:60], k, max_tokens)
+
         namespace = self._project_namespace()
-        
-        # Always use the hardcoded native RIG engine for embeddings
+
         try:
-            # We assume AI Client is configured for local embeddings
             vectors = self.ai.embed_texts([query_text])
             if not vectors or len(vectors) == 0:
-                # print("[RAG] Embedding failed, skipping retrieval.")
+                log.warning("RAG retrieve: embedding returned empty vector, skipping.")
                 return []
             qvec = vectors[0]
         except Exception as e:
-            # print(f"[RAG] Embedding exception: {e}")
+            log.error("RAG retrieve: embedding failed: %s", e)
             return []
 
-        # Fix: The Go CLI treats 'max_tokens' as the total token budget for the returned chunks.
-        token_budget = max_tokens 
+        token_budget = max_tokens
 
         payload = {
             "namespace": namespace,
@@ -185,7 +263,7 @@ class RAGClient:
             "max_tokens": token_budget,
         }
 
-        resp = self._run_cli("retrieve", payload)
+        resp = self._http_post("/retrieve", payload) or self._run_cli("retrieve", payload)
         
         chunks: List[RetrievedChunk] = []
         if not resp:
@@ -222,8 +300,12 @@ class RAGClient:
         # Sort high->low score just in case
         chunks.sort(key=lambda c: c.score, reverse=True)
         
-        # Enforce k limit
-        return chunks[:k]
+        result = chunks[:k]
+        total_chars = sum(len(c.content) for c in result)
+        est_tokens = total_chars // 4
+        log.debug("RAG retrieve: returning %d chunks (~%d tokens, best score=%.4f)",
+                  len(result), est_tokens, result[0].score if result else 0.0)
+        return result
 
     def format_context_block(self, chunks: List[RetrievedChunk], *, max_chars: int = 8000, max_chunk_chars: int = 1000) -> str:
         if not chunks:
@@ -257,12 +339,13 @@ class RAGClient:
         if not content.strip():
             return False
 
+        log.debug("RAG ingest_message: role=%s conv=%s len=%d chars",
+                  role, conversation_id, len(content))
         try:
             namespace = self._project_namespace()
-            # Always use the hardcoded native RIG engine for embeddings
             vectors = self.ai.embed_texts([content])
             if not vectors:
-                # print("[RAG] Ingest failed: No vector generated.")
+                log.warning("RAG ingest_message: embedding returned empty, skipping.")
                 return False
             vec = vectors[0]
 
@@ -278,10 +361,12 @@ class RAGClient:
                 "source": "ide_chat",
             }
 
-            self._run_cli("ingest_message", payload)
+            resp = self._http_post("/ingest_message", payload) or self._run_cli("ingest_message", payload)
+            _ = resp  # either transport is fine
+            log.debug("RAG ingest_message: stored (%s, ~%d tokens)", role, payload["token_count"])
             return True
         except Exception as e:
-            # print(f"[RAG] Message ingestion failed: {e}")
+            log.error("RAG ingest_message failed: %s", e)
             return False
 
     def ingest_document(self, file_path: str, content: str, start_line: int, end_line: int) -> bool:
@@ -293,24 +378,51 @@ class RAGClient:
 
         try:
             namespace = self._project_namespace()
-            # Generate embedding
-            vectors = self.ai.embed_texts([content]) 
+            vectors = self.ai.embed_texts([content])
             if not vectors:
+                log.warning("RAG ingest_document: embedding empty for %s:%d-%d", file_path, start_line, end_line)
                 return False
             vec = vectors[0]
 
-            payload = {
-                "namespace": namespace,
-                "file_path": file_path,
-                "content": content,
-                "vector": vec,
-                "token_count": len(content.split()),
-                "start_line": start_line,
-                "end_line": end_line,
-            }
+            token_count = len(content.split())
+            doc_id = f"file:{namespace}:{file_path}:{start_line}-{end_line}"
 
-            res = self._run_cli("ingest_document", payload)
-            return res is not None and res.get("status") == "ok"
+            # Try HTTP first — requires Document+Chunks wrapper
+            http_payload = {
+                "namespace": namespace,
+                "document": {
+                    "id": doc_id,
+                    "source": "code",
+                    "metadata": {"namespace": namespace, "file_path": file_path},
+                },
+                "chunks": [{
+                    "doc_id": doc_id,
+                    "vector": vec,
+                    "content": content,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "token_count": token_count,
+                }],
+            }
+            res = self._http_post("/ingest", http_payload)
+
+            if not res:
+                cli_payload = {
+                    "namespace": namespace,
+                    "file_path": file_path,
+                    "content": content,
+                    "vector": vec,
+                    "token_count": token_count,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }
+                res = self._run_cli("ingest_document", cli_payload)
+
+            ok = res is not None and (res.get("status") in ("ok", "ingested"))
+            if ok:
+                log.debug("RAG ingest_document: indexed %s lines %d-%d (~%d tokens)",
+                          file_path, start_line, end_line, token_count)
+            return ok
         except Exception as e:
-            # print(f"[RAG] Document ingestion failed: {e}")
+            log.error("RAG ingest_document failed (%s): %s", file_path, e)
             return False

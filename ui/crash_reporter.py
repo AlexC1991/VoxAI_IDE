@@ -36,7 +36,7 @@ class CrashReporter(QDialog):
         
         # Log to file automatically
         try:
-            with open("crash.log", "w") as f:
+            with open("crash.log", "w", encoding="utf-8") as f:
                 f.write(error_msg)
         except Exception:
             pass

@@ -43,9 +43,11 @@ class SettingsManager:
                     for key, value in data["urls"].items():
                         self.settings.setValue(f"urls/{key}", value)
 
-                print(f"[Settings] Loaded secrets from {secrets_path}")
+                import logging
+                logging.getLogger(__name__).info("Loaded secrets from %s", secrets_path)
             except Exception as e:
-                print(f"[Settings] Error loading secrets: {e}")
+                import logging
+                logging.getLogger(__name__).error("Error loading secrets: %s", e)
 
     def get_api_key(self, provider):
         """Returns the API key for a specific provider."""
@@ -166,16 +168,28 @@ class SettingsManager:
         self.settings.setValue("project/path", path)
 
     def get_max_history_messages(self) -> int:
-        return int(self.settings.value("context/max_history_messages", 10))
+        try:
+            return int(self.settings.value("context/max_history_messages", 10))
+        except (ValueError, TypeError):
+            return 10
 
     def get_max_file_list(self) -> int:
-        return int(self.settings.value("context/max_file_list", 50))
+        try:
+            return int(self.settings.value("context/max_file_list", 50))
+        except (ValueError, TypeError):
+            return 50
 
     def get_rag_max_context(self) -> int:
-        return int(self.settings.value("rag/max_context_chars", 4000))
+        try:
+            return int(self.settings.value("rag/max_context_chars", 4000))
+        except (ValueError, TypeError):
+            return 4000
 
     def get_rag_max_chunk(self) -> int:
-        return int(self.settings.value("rag/max_chunk_chars", 1000))
+        try:
+            return int(self.settings.value("rag/max_chunk_chars", 1000))
+        except (ValueError, TypeError):
+            return 1000
 
     # -----------------------------
     # Chat Appearance Settings
@@ -191,6 +205,45 @@ class SettingsManager:
 
     def set_chat_ai_color(self, color: str):
         self.settings.setValue("appearance/chat_ai_color", color)
+
+    # -----------------------------
+    # Agent Behavior Settings
+    # -----------------------------
+    def get_max_history_tokens(self) -> int:
+        try:
+            return int(self.settings.value("context/max_history_tokens", 24000))
+        except Exception:
+            return 24000
+
+    def set_max_history_tokens(self, val: int):
+        self.settings.setValue("context/max_history_tokens", max(4000, min(128000, int(val))))
+
+    def get_auto_approve_writes(self) -> bool:
+        val = self.settings.value("agent/auto_approve_writes", False)
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("1", "true", "yes", "on")
+
+    def set_auto_approve_writes(self, enabled: bool):
+        self.settings.setValue("agent/auto_approve_writes", bool(enabled))
+
+    def get_auto_save_conversation(self) -> bool:
+        val = self.settings.value("agent/auto_save_conversation", True)
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("1", "true", "yes", "on")
+
+    def set_auto_save_conversation(self, enabled: bool):
+        self.settings.setValue("agent/auto_save_conversation", bool(enabled))
+
+    def get_web_search_enabled(self) -> bool:
+        val = self.settings.value("agent/web_search_enabled", True)
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("1", "true", "yes", "on")
+
+    def set_web_search_enabled(self, enabled: bool):
+        self.settings.setValue("agent/web_search_enabled", bool(enabled))
 
     def get_local_models(self):
         """Scans the models/llm directory for .gguf files."""

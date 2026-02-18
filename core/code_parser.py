@@ -5,6 +5,15 @@ import logging
 log = logging.getLogger(__name__)
 
 class CodeParser:
+    KNOWN_TOOLS = {
+        'read_file', 'write_file', 'edit_file', 'list_files', 'move_file',
+        'copy_file', 'search_files', 'get_file_structure', 'delete_file',
+        'execute_command', 'search_memory', 'search_codebase', 'index_codebase',
+        'git_status', 'git_diff', 'git_log', 'git_commit',
+        'git_push', 'git_pull', 'git_fetch',
+        'web_search', 'fetch_url',
+    }
+
     @staticmethod
     def extract_code(text):
         """
@@ -64,5 +73,8 @@ class CodeParser:
             
             args = dict(attr_pattern.findall(attr_str))
             calls.append({'cmd': tool_name, 'args': args})
-            
+
+        # Filter to only recognised tool commands
+        calls = [c for c in calls if c['cmd'] in CodeParser.KNOWN_TOOLS]
+
         return calls

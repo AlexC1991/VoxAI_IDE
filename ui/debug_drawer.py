@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTextEdit, QLabel,
                              QPushButton, QHBoxLayout)
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, Signal
 
 class DebugDrawer(QWidget):
     send_to_agent = Signal(str) # Emits full text content
@@ -62,8 +62,10 @@ class DebugDrawer(QWidget):
         self.hide()
 
     def append_output(self, text, is_error=False):
+        import html as _html
         color = "#f44336" if is_error else "#d4d4d4"
-        self.output_area.append(f'<span style="color:{color};">{text}</span>')
+        safe = _html.escape(text)
+        self.output_area.append(f'<span style="color:{color};">{safe}</span>')
         self.output_area.verticalScrollBar().setValue(
             self.output_area.verticalScrollBar().maximum()
         )

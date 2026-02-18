@@ -109,24 +109,40 @@ class AgentToolHandler:
         return "\n".join(file_list)
 
     @staticmethod
-    def search_files(query, root_dir="."):
-        """Searches for a string in all files (grep-like)."""
+    def search_files(query, root_dir=".", file_pattern=None, case_insensitive=False):
+        """Searches for a string or regex pattern in files.
+        Supports optional file_pattern glob (e.g. '*.py') and case_insensitive flag."""
+        import re as _re
+        import fnmatch
         matches = []
+        max_results = 100
         try:
+            flags = _re.IGNORECASE if case_insensitive else 0
+            try:
+                pattern = _re.compile(query, flags)
+                use_regex = True
+            except _re.error:
+                use_regex = False
+
             for root, dirs, files in os.walk(root_dir):
                 dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
                 for file in files:
                     if file == "crash.log":
+                        continue
+                    if file_pattern and not fnmatch.fnmatch(file, file_pattern):
                         continue
                     path = os.path.join(root, file)
                     rel_path = os.path.relpath(path, root_dir)
                     try:
                         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                             for i, line in enumerate(f):
-                                if query in line:
-                                    matches.append(f"{rel_path}:{i+1}: {line.strip()[:100]}")
-                                    if len(matches) > 50:
-                                        return "\n".join(matches) + "\n... (Truncated)"
+                                hit = (pattern.search(line) if use_regex
+                                       else (query.lower() in line.lower() if case_insensitive
+                                             else query in line))
+                                if hit:
+                                    matches.append(f"{rel_path}:{i+1}: {line.strip()[:120]}")
+                                    if len(matches) >= max_results:
+                                        return "\n".join(matches) + f"\n... (Showing first {max_results} results)"
                     except Exception:
                         continue
             if not matches:
@@ -239,8 +255,9 @@ class AgentToolHandler:
             return f"[Error deleting '{path}': {e}]"
 
     @staticmethod
-    def execute_command(command, cwd=None):
-        """Executes a shell command. Working directory must be inside the project."""
+    def execute_command(command, cwd=None, timeout=120):
+        """Executes a shell command with streaming output capture.
+        Working directory must be inside the project. Default timeout: 120s."""
         import subprocess
         effective_cwd = cwd or os.getcwd()
         try:
@@ -254,11 +271,52 @@ class AgentToolHandler:
                 cwd=effective_cwd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
             )
-            return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            output = ""
+            if result.stdout:
+                output += f"STDOUT:\n{result.stdout}"
+            if result.stderr:
+                output += f"\nSTDERR:\n{result.stderr}"
+            if result.returncode != 0:
+                output += f"\n[Exit code: {result.returncode}]"
+            return output.strip() or "[Command completed with no output]"
+        except subprocess.TimeoutExpired:
+            return f"[Error: Command timed out after {timeout}s. Consider running it manually.]"
         except Exception as e:
             return f"[Error executing command: {e}]"
+
+    @staticmethod
+    def edit_file(path, old_text, new_text):
+        """Replaces a specific text block in a file (surgical edit).
+        Much more token-efficient than rewriting the whole file."""
+        try:
+            _require_inside_project(path, action="edit")
+        except PermissionError as e:
+            return f"[Permission Denied: {e}]"
+        full_path = os.path.abspath(path)
+        if not os.path.exists(full_path):
+            return f"[Error: File not found: {full_path}]"
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            if old_text not in content:
+                return (
+                    f"[Error: old_text not found in {path}. "
+                    f"Make sure the text matches exactly (including whitespace).]"
+                )
+            count = content.count(old_text)
+            if count > 1:
+                return (
+                    f"[Error: old_text matches {count} locations in {path}. "
+                    f"Provide more surrounding context to make it unique.]"
+                )
+            new_content = content.replace(old_text, new_text, 1)
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            return f"[Success: Edited {full_path} — replaced {len(old_text)} chars with {len(new_text)} chars]"
+        except Exception as e:
+            return f"[Error editing file: {e}]"
 
     # ------------------------------------------------------------------
     # Utilities
