@@ -11,29 +11,38 @@ import logging
 
 log = logging.getLogger(__name__)
 
-_C_BG       = "#1e1e1e"
-_C_USER     = "#ff9900"
-_C_AI       = "#00f3ff"
-_C_SYSTEM   = "#858585"
-_C_DIM      = "#6e6e6e"
-_C_ACCENT   = "#4ec9b0"
+# ── Palette ──
+_BG         = "#111113"
+_C_USER     = "#e4e4e7"
+_C_AI       = "#d4d4d8"
+_C_SYSTEM   = "#52525b"
+_C_TOOL     = "#4ec9b0"
+_C_DIM      = "#52525b"
+_C_ACCENT   = "#00f3ff"
+_C_ORANGE   = "#ff9900"
 _C_LINK     = "#3794ff"
-_C_CODE_BG  = "#2d2d2d"
+_C_CODE_BG  = "#1a1a1d"
 _C_CODE_FG  = "#d4d4d8"
 _C_ERR      = "#f14c4c"
+_C_GREEN    = "#4ec9b0"
 
 _FONT_MONO  = "Consolas, 'Courier New', 'Fira Code', monospace"
 _FONT_SANS  = "'Segoe UI', 'Inter', system-ui, sans-serif"
 
-_ACTION_BTN_CSS = (
-    "QPushButton { background: transparent; color: %s; border: none; "
-    "font-family: %s; font-size: 10px; padding: 1px 6px; }"
-    "QPushButton:hover { color: #00f3ff; text-decoration: underline; }"
-)
+_ROLE_CSS = (
+    "color: %s; font-family: {m}; font-size: 11px; font-weight: 600; "
+    "background: transparent; padding: 0; margin: 0; letter-spacing: 0.3px;"
+).replace("{m}", _FONT_MONO)
+
+_SMALL_BTN = (
+    "QPushButton { background: transparent; color: #3f3f46; border: none; "
+    "font-family: %s; font-size: 10px; padding: 0 4px; }"
+    "QPushButton:hover { color: #a1a1aa; }"
+) % _FONT_MONO
 
 
 class MessageItem(QWidget):
-    """Flat, inline message widget with action buttons."""
+    """Flat, terminal-style message widget."""
     regenerate_requested = Signal()
     copy_requested = Signal(str)
 
@@ -45,106 +54,157 @@ class MessageItem(QWidget):
 
         from core.settings import SettingsManager
         self.settings_manager = SettingsManager()
-        user_color = self.settings_manager.get_chat_user_color()
-        ai_color = self.settings_manager.get_chat_ai_color()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 6, 4, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(2)
 
         role_lower = role.lower()
-        if role_lower == "user":
-            prefix, role_name, color = "> ", "You", user_color
-        elif role_lower in ("ai", "assistant"):
-            prefix, role_name, color = "", "VoxAI", ai_color
-        elif role_lower == "tool":
-            prefix, role_name, color = "", "Tool", _C_ACCENT
-        else:
-            prefix, role_name, color = "", "System", "#555555"
-
-        self.current_color = color
         is_ai = role_lower in ("ai", "assistant")
+        is_user = role_lower == "user"
+        is_tool = role_lower == "tool"
         is_system = role_lower == "system"
-        is_project_switch = is_system and "switched project to" in text.lower()
+        is_tool_result = is_system and text.startswith("[TOOL_RESULT]")
 
-        # --- Header row: role label + action buttons ---
-        header_row = QWidget()
-        header_layout = QHBoxLayout(header_row)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(6)
-
-        self.role_label = QLabel(f"{prefix}{role_name}")
-        self.role_label.setStyleSheet(
-            f"color: {color}; font-family: {_FONT_MONO}; font-size: 11px; "
-            f"font-weight: bold; background: transparent; padding: 0; margin: 0; "
-            f"text-transform: uppercase; letter-spacing: 0.5px;")
-        header_layout.addWidget(self.role_label)
-        header_layout.addStretch()
-
-        # Copy button for all roles
-        copy_btn = QPushButton("Copy")
-        copy_btn.setCursor(Qt.PointingHandCursor)
-        copy_btn.setStyleSheet(_ACTION_BTN_CSS % (_C_DIM, _FONT_MONO))
-        copy_btn.clicked.connect(self._copy_text)
-        header_layout.addWidget(copy_btn)
-
-        # Regenerate button only for AI
-        if is_ai:
-            regen_btn = QPushButton("Regenerate")
-            regen_btn.setCursor(Qt.PointingHandCursor)
-            regen_btn.setStyleSheet(_ACTION_BTN_CSS % (_C_DIM, _FONT_MONO))
-            regen_btn.clicked.connect(self.regenerate_requested.emit)
-            header_layout.addWidget(regen_btn)
-
-        # Container with optional AI border
-        self.item_container = QFrame()
-        self.container_layout = QVBoxLayout(self.item_container)
-        self.container_layout.setContentsMargins(0, 0, 0, 0)
-        self.container_layout.setSpacing(4)
-
-        if is_ai:
-            self.item_container.setStyleSheet(
-                f"border-left: 2px solid {_C_AI}; margin-left: 4px; padding-left: 10px;")
+        # Determine colors
+        if is_user:
+            label_color = _C_ORANGE
+            text_color = _C_USER
+            role_name = "You"
+        elif is_ai:
+            label_color = _C_ACCENT
+            text_color = _C_AI
+            role_name = "VoxAI"
+        elif is_tool:
+            label_color = _C_GREEN
+            text_color = _C_TOOL
+            role_name = "Tool"
         else:
-            self.item_container.setStyleSheet(
-                "border: none; margin-left: 0; padding-left: 0;")
+            label_color = _C_DIM
+            text_color = _C_SYSTEM
+            role_name = "System"
 
-        if is_project_switch:
-            line = QFrame()
-            line.setFrameShape(QFrame.HLine)
-            line.setFrameShadow(QFrame.Plain)
-            line.setStyleSheet("background-color: #333333; margin: 10px 0;")
-            layout.addWidget(line)
+        self.current_color = text_color
 
-        self.container_layout.addWidget(header_row)
+        # ── Tool results: collapsible ──
+        if is_tool_result:
+            self._build_tool_result(layout, text)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setStyleSheet("MessageItem { background: transparent; }")
+            return
 
-        # --- Content ---
+        # ── Header row ──
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        hdr.setSpacing(4)
+
+        self.role_label = QLabel(role_name)
+        self.role_label.setStyleSheet(_ROLE_CSS % label_color)
+        hdr.addWidget(self.role_label)
+        hdr.addStretch()
+
+        copy_btn = QPushButton("copy")
+        copy_btn.setCursor(Qt.PointingHandCursor)
+        copy_btn.setStyleSheet(_SMALL_BTN)
+        copy_btn.clicked.connect(self._copy_text)
+        hdr.addWidget(copy_btn)
+
+        if is_ai:
+            regen_btn = QPushButton("retry")
+            regen_btn.setCursor(Qt.PointingHandCursor)
+            regen_btn.setStyleSheet(_SMALL_BTN)
+            regen_btn.clicked.connect(self.regenerate_requested.emit)
+            hdr.addWidget(regen_btn)
+
+        layout.addLayout(hdr)
+
+        # ── Content ──
         self.content_label = QLabel()
         self.content_label.setWordWrap(True)
         self.content_label.setTextFormat(Qt.RichText)
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.content_label.setOpenExternalLinks(True)
-        self.content_label.setStyleSheet(
-            f"color: {color}; font-family: {_FONT_MONO}; font-size: 12px; "
-            f"background: transparent; padding: 2px 0 0 0; margin: 0; "
-            f"line-height: 1.4;")
 
-        formatted = self._format(text, color)
-        self.content_label.setText(formatted)
-        self.container_layout.addWidget(self.content_label)
+        if is_ai:
+            self.content_label.setStyleSheet(
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 13px; "
+                f"background: transparent; padding: 2px 0 0 10px; margin: 0; "
+                f"line-height: 1.45; border-left: 2px solid #1e1e21;")
+        elif is_user:
+            self.content_label.setStyleSheet(
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 13px; "
+                f"background: transparent; padding: 2px 0 0 0; margin: 0; "
+                f"line-height: 1.4;")
+        else:
+            self.content_label.setStyleSheet(
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 11px; "
+                f"background: transparent; padding: 1px 0; margin: 0; "
+                f"line-height: 1.3;")
 
-        layout.addWidget(self.item_container)
+        self.content_label.setText(self._format(text, text_color))
+        layout.addWidget(self.content_label)
 
-        # --- Footer (Usage Stats) ---
+        # ── Footer (token usage) ──
         self.footer_label = QLabel()
         self.footer_label.setStyleSheet(
-            f"color: {_C_DIM}; font-family: {_FONT_MONO}; font-size: 10px; "
-            f"background: transparent; padding-top: 4px;")
+            f"color: #3f3f46; font-family: {_FONT_MONO}; font-size: 10px; "
+            f"background: transparent; padding: 2px 0 0 10px;")
         self.footer_label.hide()
-        self.container_layout.addWidget(self.footer_label)
+        layout.addWidget(self.footer_label)
 
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("MessageItem { background: transparent; border: none; }")
+        self.setStyleSheet("MessageItem { background: transparent; }")
+
+    def _build_tool_result(self, parent_layout, text: str):
+        """Render [TOOL_RESULT] blocks as a collapsible section."""
+        clean = text
+        if clean.startswith("[TOOL_RESULT]"):
+            clean = clean[len("[TOOL_RESULT]"):].strip()
+        if clean.endswith("[/TOOL_RESULT]"):
+            clean = clean[:-len("[/TOOL_RESULT]")].strip()
+        # Strip the automated notice
+        clean = clean.replace("(Automated system output — not user input)", "").strip()
+
+        preview = clean[:120].replace("\n", " ")
+        if len(clean) > 120:
+            preview += "..."
+
+        self._tool_btn = QPushButton(f"  ▸ Tool Result  —  {preview}")
+        self._tool_btn.setCheckable(True)
+        self._tool_btn.setChecked(False)
+        self._tool_btn.setStyleSheet(f"""
+            QPushButton {{
+                text-align: left; background: transparent;
+                color: {_C_DIM}; border: none; padding: 3px 0;
+                font-family: {_FONT_MONO}; font-size: 11px;
+            }}
+            QPushButton:checked {{ color: {_C_GREEN}; }}
+            QPushButton:hover {{ color: {_C_GREEN}; }}
+        """)
+
+        self._tool_detail = QLabel()
+        self._tool_detail.setWordWrap(True)
+        self._tool_detail.setTextFormat(Qt.RichText)
+        self._tool_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        escaped = html_mod.escape(clean)
+        self._tool_detail.setText(
+            f'<pre style="color:{_C_DIM}; font-family:{_FONT_MONO}; font-size:11px; '
+            f'background:{_C_CODE_BG}; padding:8px; border-radius:4px; '
+            f'white-space:pre-wrap; margin:2px 0 0 12px;">{escaped}</pre>')
+        self._tool_detail.hide()
+
+        self._tool_btn.clicked.connect(self._toggle_tool_detail)
+        parent_layout.addWidget(self._tool_btn)
+        parent_layout.addWidget(self._tool_detail)
+
+    def _toggle_tool_detail(self):
+        expanded = self._tool_btn.isChecked()
+        self._tool_detail.setVisible(expanded)
+        txt = self._tool_btn.text()
+        if expanded:
+            self._tool_btn.setText(txt.replace("▸", "▾", 1))
+        else:
+            self._tool_btn.setText(txt.replace("▾", "▸", 1))
 
     def _copy_text(self):
         QApplication.clipboard().setText(self.original_text)
@@ -155,27 +215,21 @@ class MessageItem(QWidget):
         ai_color = self.settings_manager.get_chat_ai_color()
         role_lower = self.role.lower()
         if role_lower == "user":
-            color = user_color
+            color = user_color or _C_USER
         elif role_lower in ("ai", "assistant"):
-            color = ai_color
+            color = ai_color or _C_AI
         elif role_lower == "tool":
-            color = _C_ACCENT
+            color = _C_GREEN
         else:
-            color = "#555555"
+            color = _C_SYSTEM
         self.current_color = color
-        self.role_label.setStyleSheet(
-            f"color: {color}; font-family: {_FONT_MONO}; font-size: 11px; "
-            f"font-weight: bold; background: transparent; padding: 0; margin: 0; "
-            f"text-transform: uppercase; letter-spacing: 0.5px;")
-        if role_lower in ("ai", "assistant"):
-            self.item_container.setStyleSheet(
-                f"border-left: 2px solid {ai_color}; margin-left: 4px; padding-left: 10px;")
         if hasattr(self, 'original_text'):
             self.set_text(self.original_text)
 
     def set_text(self, text: str):
         self.original_text = text
-        self.content_label.setText(self._format(text, self.current_color))
+        if hasattr(self, 'content_label'):
+            self.content_label.setText(self._format(text, self.current_color))
 
     def set_usage(self, usage: dict):
         if not usage:
@@ -184,7 +238,7 @@ class MessageItem(QWidget):
         completion = usage.get("completion_tokens", 0)
         total = usage.get("total_tokens", 0)
         self.footer_label.setText(
-            f"Tokens: {total} (Prompt: {prompt} | Output: {completion})")
+            f"tokens: {total}  (in: {prompt} · out: {completion})")
         self.footer_label.show()
 
     def _format(self, text: str, main_color: str) -> str:
@@ -207,6 +261,12 @@ class MessageItem(QWidget):
         else:
             lang, code = "", content
 
+        lang_badge = ""
+        if lang:
+            lang_badge = (
+                f'<span style="color:{_C_DIM}; font-size:10px; '
+                f'font-family:{_FONT_MONO};">{lang}</span><br>')
+
         try:
             from pygments import highlight
             from pygments.lexers import get_lexer_by_name, guess_lexer
@@ -217,19 +277,20 @@ class MessageItem(QWidget):
                     f"padding: 10px; border-radius: 6px; "
                     f"background-color: {_C_CODE_BG}; color: {_C_CODE_FG}; "
                     f"display: block; white-space: pre-wrap; font-size: 12px; "
-                    f"font-family: {_FONT_MONO}; margin: 6px 0;"))
+                    f"font-family: {_FONT_MONO}; margin: 4px 0;"))
             try:
                 lexer = get_lexer_by_name(lang) if lang else guess_lexer(code)
             except Exception:
                 from pygments.lexers.special import TextLexer
                 lexer = TextLexer()
-            return highlight(code, lexer, formatter)
+            return lang_badge + highlight(code, lexer, formatter)
         except ImportError:
             escaped = html_mod.escape(code)
             return (
+                lang_badge +
                 f'<pre style="background:{_C_CODE_BG}; color:{_C_CODE_FG}; '
                 f'padding:10px; border-radius:6px; font-family:{_FONT_MONO}; '
-                f'font-size:12px; margin:6px 0; white-space:pre-wrap;">'
+                f'font-size:12px; margin:4px 0; white-space:pre-wrap;">'
                 f'{escaped}</pre>')
 
     def _render_text(self, text: str, color: str) -> str:
@@ -247,7 +308,7 @@ class MessageItem(QWidget):
 
 
 class ProgressItem(QWidget):
-    """Collapsible thought-process + tool step tracker."""
+    """Collapsible tool execution tracker — shows thinking + live tool steps."""
     size_changed = Signal()
     show_detail_requested = Signal(str, str)
 
@@ -255,51 +316,54 @@ class ProgressItem(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 4, 12, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(2)
 
-        self.thought_expander = QPushButton("  Thinking...")
+        # Thinking toggle
+        self.thought_expander = QPushButton("  ▸ Thinking...")
         self.thought_expander.setCheckable(True)
         self.thought_expander.setChecked(False)
         self.thought_expander.setStyleSheet(f"""
             QPushButton {{
                 text-align: left; background: transparent;
-                color: {_C_DIM}; border: none; padding: 4px 8px;
-                font-family: {_FONT_MONO}; font-size: 12px;
+                color: {_C_DIM}; border: none; padding: 2px 0;
+                font-family: {_FONT_MONO}; font-size: 11px;
             }}
-            QPushButton:checked {{ color: {_C_AI}; }}
-            QPushButton:hover   {{ color: {_C_AI}; }}
+            QPushButton:checked {{ color: {_C_ACCENT}; }}
+            QPushButton:hover   {{ color: {_C_ACCENT}; }}
         """)
         self.thought_expander.clicked.connect(self._toggle_thought)
         layout.addWidget(self.thought_expander)
 
-        self.thought_content = QLabel("(Analyzing request...)")
+        self.thought_content = QLabel("")
         self.thought_content.setWordWrap(True)
         self.thought_content.setStyleSheet(
             f"color: {_C_DIM}; font-style: italic; font-family: {_FONT_MONO}; "
-            f"font-size: 11px; padding: 4px 12px; "
-            f"border-left: 2px solid {_C_DIM}; background: transparent;")
+            f"font-size: 11px; padding: 2px 0 2px 14px; "
+            f"border-left: 2px solid #1e1e21; background: transparent;")
         self.thought_content.hide()
         layout.addWidget(self.thought_content)
 
+        # Tool steps
         self.steps_container = QWidget()
         self.steps_layout = QVBoxLayout(self.steps_container)
-        self.steps_layout.setContentsMargins(12, 2, 0, 2)
-        self.steps_layout.setSpacing(3)
+        self.steps_layout.setContentsMargins(10, 0, 0, 0)
+        self.steps_layout.setSpacing(1)
         layout.addWidget(self.steps_container)
 
-        self.status_label = QLabel("...")
+        # Status line
+        self.status_label = QLabel("")
         self.status_label.setStyleSheet(
-            f"color: {_C_DIM}; font-family: {_FONT_MONO}; font-size: 11px; "
-            f"padding-left: 12px; background: transparent;")
+            f"color: #3f3f46; font-family: {_FONT_MONO}; font-size: 10px; "
+            f"padding-left: 10px; background: transparent;")
         layout.addWidget(self.status_label)
 
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("ProgressItem { background: transparent; border: none; }")
+        self.setStyleSheet("ProgressItem { background: transparent; }")
 
     def _toggle_thought(self):
         expanded = self.thought_expander.isChecked()
-        arrow = "v" if expanded else ">"
+        arrow = "▾" if expanded else "▸"
         self.thought_expander.setText(f"  {arrow} Thinking...")
         self.thought_content.setVisible(expanded)
         self.size_changed.emit()
@@ -313,7 +377,7 @@ class ProgressItem(QWidget):
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(6)
+        row_layout.setSpacing(4)
         label = QLabel(f"{icon} {text}")
         label.setStyleSheet(
             f"color: {_C_DIM}; font-family: {_FONT_MONO}; font-size: 11px; "
@@ -322,14 +386,10 @@ class ProgressItem(QWidget):
         if detail:
             btn = QPushButton("view")
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; color: {_C_LINK}; border: none;
-                    font-family: {_FONT_MONO}; font-size: 10px;
-                    text-decoration: underline; padding: 0;
-                }}
-                QPushButton:hover {{ color: {_C_USER}; }}
-            """)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {_C_LINK}; border: none; "
+                f"font-family: {_FONT_MONO}; font-size: 10px; padding: 0; }}"
+                f"QPushButton:hover {{ color: {_C_ORANGE}; }}")
             btn.clicked.connect(
                 lambda: self.show_detail_requested.emit(text, detail))
             row_layout.addWidget(btn)
@@ -338,7 +398,6 @@ class ProgressItem(QWidget):
         self.size_changed.emit()
 
     def update_step_status(self, icon: str, result: str):
-        """Update the last step with a completion indicator."""
         count = self.steps_layout.count()
         if count == 0:
             return
@@ -349,7 +408,11 @@ class ProgressItem(QWidget):
                 label = row_layout.itemAt(0).widget()
                 if label:
                     current = label.text()
+                    color = _C_GREEN if icon == "✓" else _C_ERR if icon == "✗" else _C_DIM
                     label.setText(f"{current} — {result}")
+                    label.setStyleSheet(
+                        f"color: {color}; font-family: {_FONT_MONO}; "
+                        f"font-size: 11px; background: transparent;")
 
     def finish(self):
         self.status_label.hide()

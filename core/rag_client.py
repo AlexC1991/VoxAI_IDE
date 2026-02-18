@@ -42,6 +42,8 @@ class RAGClient:
     _server_port: Optional[int] = None
     _server_lock = threading.Lock()
     _server_data_dir: Optional[str] = None
+    _server_failed: bool = False          # True once we know the server can't start
+    _atexit_registered: bool = False
 
     def __init__(self):
         self.settings = SettingsManager()
@@ -86,12 +88,18 @@ class RAGClient:
     def _ensure_server(cls, binary_path: str, storage_dir: str) -> bool:
         """Start the Go HTTP server on 127.0.0.1 if not already running."""
         with cls._server_lock:
+            # Already running and healthy
             if (cls._server_process and cls._server_process.poll() is None
                     and cls._server_data_dir == storage_dir):
                 return True
 
+            # Already know the server can't start — skip silently
+            if cls._server_failed and cls._server_data_dir == storage_dir:
+                return False
+
             # Kill stale server if data dir changed (project switch)
             cls._kill_server()
+            cls._server_failed = False
 
             # Pick a free port on loopback
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -111,6 +119,8 @@ class RAGClient:
                 )
             except Exception as e:
                 log.warning("Could not start RAG server: %s — falling back to CLI", e)
+                cls._server_failed = True
+                cls._server_data_dir = storage_dir
                 return False
 
             # Wait for health check (up to 3 s)
@@ -123,15 +133,21 @@ class RAGClient:
                         cls._server_data_dir = storage_dir
                         log.info("RAG server started on 127.0.0.1:%d (pid=%d)",
                                  port, cls._server_process.pid)
-                        atexit.register(cls._kill_server)
+                        if not cls._atexit_registered:
+                            atexit.register(cls._kill_server)
+                            cls._atexit_registered = True
                         return True
                 except Exception:
                     if cls._server_process.poll() is not None:
-                        log.warning("RAG server exited immediately — falling back to CLI")
+                        log.warning("RAG server exited immediately — using CLI fallback for this session")
+                        cls._server_failed = True
+                        cls._server_data_dir = storage_dir
                         return False
 
-            log.warning("RAG server did not become healthy — falling back to CLI")
+            log.warning("RAG server did not become healthy — using CLI fallback for this session")
             cls._kill_server()
+            cls._server_failed = True
+            cls._server_data_dir = storage_dir
             return False
 
     @classmethod
@@ -147,7 +163,8 @@ class RAGClient:
                     pass
             cls._server_process = None
             cls._server_port = None
-            cls._server_data_dir = None
+        cls._server_data_dir = None
+        cls._server_failed = False
 
     @classmethod
     def shutdown_server(cls):
@@ -187,7 +204,7 @@ class RAGClient:
                 cmd = [self.binary_path, "-cmd", cmd_name,
                        "-data", self.storage_dir, "-dim", "768"]
             else:
-                cmd = [self.go_exe, "run", "./cmd/cli",
+                cmd = [self.go_exe, "run", ".",
                        "-cmd", cmd_name, "-data", self.storage_dir, "-dim", "768"]
 
             result = subprocess.run(
@@ -362,7 +379,9 @@ class RAGClient:
             }
 
             resp = self._http_post("/ingest_message", payload) or self._run_cli("ingest_message", payload)
-            _ = resp  # either transport is fine
+            if resp is None:
+                log.debug("RAG ingest_message: both transports returned None")
+                return False
             log.debug("RAG ingest_message: stored (%s, ~%d tokens)", role, payload["token_count"])
             return True
         except Exception as e:
@@ -419,9 +438,6 @@ class RAGClient:
                 res = self._run_cli("ingest_document", cli_payload)
 
             ok = res is not None and (res.get("status") in ("ok", "ingested"))
-            if ok:
-                log.debug("RAG ingest_document: indexed %s lines %d-%d (~%d tokens)",
-                          file_path, start_line, end_line, token_count)
             return ok
         except Exception as e:
             log.error("RAG ingest_document failed (%s): %s", file_path, e)

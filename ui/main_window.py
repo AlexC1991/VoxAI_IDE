@@ -6,11 +6,11 @@ import logging
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout,
     QPushButton, QFileDialog, QMessageBox,
-    QGraphicsDropShadowEffect, QSystemTrayIcon, QStatusBar,
+    QSystemTrayIcon, QStatusBar,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QDialog,
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 
 from ui.chat_panel import ChatPanel
 from ui.editor_panel import EditorPanel
@@ -173,35 +173,36 @@ class CodingAgentIDE(QMainWindow):
             self.chat_panel.clear_context)
         self.chat_panel.conversation_changed.connect(self._refresh_history)
 
-        # Toolbar
-        self.create_global_toolbar()
-        main_layout.addWidget(self.toolbar_widget)
+        # ── Slim icon bar (replaces old toolbar) ──
+        self._create_icon_bar()
+        main_layout.addWidget(self._icon_bar)
 
-        # Splitters
+        # ── Splitters (chat-centric layout) ──
         self.main_splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(self.main_splitter)
 
-        # Left pane: history sidebar + chat
-        self.left_splitter = QSplitter(Qt.Horizontal)
-        self.left_splitter.addWidget(self.history_sidebar)
-        self.left_splitter.addWidget(self.chat_panel)
-        self.left_splitter.setSizes([0, 300])
-        self.main_splitter.addWidget(self.left_splitter)
+        # Left pane: history sidebar (hidden by default)
+        self.main_splitter.addWidget(self.history_sidebar)
 
+        # Centre: chat panel (dominant)
+        self.main_splitter.addWidget(self.chat_panel)
+
+        # Right pane: editor + search + tree/outline (collapsible)
         self.right_splitter = QSplitter(Qt.Vertical)
-        self.main_splitter.addWidget(self.right_splitter)
         self.right_splitter.addWidget(self.editor_panel)
         self.right_splitter.addWidget(self.search_panel)
 
-        # Bottom right: file tree + code outline side by side
         self.bottom_right = QSplitter(Qt.Horizontal)
         self.bottom_right.addWidget(self.tree_panel)
         self.bottom_right.addWidget(self.code_outline)
         self.bottom_right.setSizes([300, 0])
         self.right_splitter.addWidget(self.bottom_right)
-
-        self.main_splitter.setSizes([300, 900])
         self.right_splitter.setSizes([500, 0, 200])
+
+        self.main_splitter.addWidget(self.right_splitter)
+
+        # Default sizes: history hidden, chat ~60%, right panels ~40%
+        self.main_splitter.setSizes([0, 700, 500])
 
         # Status bar
         self._setup_status_bar()
@@ -222,6 +223,10 @@ class CodingAgentIDE(QMainWindow):
             self._open_file_switcher)
         QShortcut(QKeySequence("Ctrl+Shift+L"), self).activated.connect(
             self._toggle_code_outline)
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(
+            self._toggle_file_tree)
+        QShortcut(QKeySequence("Ctrl+Shift+E"), self).activated.connect(
+            self._toggle_editor)
 
         # Project selection
         self.select_project_folder()
@@ -231,6 +236,8 @@ class CodingAgentIDE(QMainWindow):
             self.settings_manager.set_last_project_path(self.project_path)
         set_project_root(self.project_path)
         self.search_panel.set_root(self.project_path)
+        if hasattr(self, '_title_label') and self.project_path:
+            self._title_label.setText(os.path.basename(self.project_path))
 
     # ------------------------------------------------------------------
     # Status bar
@@ -238,39 +245,42 @@ class CodingAgentIDE(QMainWindow):
     def _setup_status_bar(self):
         sb = QStatusBar()
         sb.setStyleSheet(
-            "QStatusBar { background: #18181b; color: #a1a1aa; "
-            "border-top: 1px solid #27272a; font-family: 'Consolas', monospace; "
-            "font-size: 11px; }"
+            "QStatusBar { background: #0e0e10; color: #71717a; "
+            "border-top: 1px solid #1e1e21; font-family: 'Consolas', monospace; "
+            "font-size: 11px; padding: 0 4px; }"
             "QStatusBar::item { border: none; }")
         self.setStatusBar(sb)
 
         self._status_branch = QLabel("branch: —")
-        self._status_branch.setStyleSheet("color: #a1a1aa; padding: 0 12px;")
+        self._status_branch.setStyleSheet(
+            "color: #71717a; padding: 0 10px; font-size: 11px;")
         sb.addWidget(self._status_branch)
 
         self._status_cursor = QLabel("Ln 1, Col 1")
-        self._status_cursor.setStyleSheet("color: #a1a1aa; padding: 0 12px;")
+        self._status_cursor.setStyleSheet(
+            "color: #71717a; padding: 0 10px; font-size: 11px;")
         sb.addPermanentWidget(self._status_cursor)
 
         self._status_encoding = QLabel("UTF-8")
-        self._status_encoding.setStyleSheet("color: #a1a1aa; padding: 0 12px;")
+        self._status_encoding.setStyleSheet(
+            "color: #52525b; padding: 0 10px; font-size: 11px;")
         sb.addPermanentWidget(self._status_encoding)
 
-        # Token usage context bar
         from PySide6.QtWidgets import QProgressBar
         self._token_bar = QProgressBar()
-        self._token_bar.setFixedWidth(120)
-        self._token_bar.setFixedHeight(14)
+        self._token_bar.setFixedWidth(100)
+        self._token_bar.setFixedHeight(10)
         self._token_bar.setRange(0, 100)
         self._token_bar.setValue(0)
         self._token_bar.setFormat("")
         self._token_bar.setStyleSheet(
-            "QProgressBar { background: #27272a; border: 1px solid #3f3f46; border-radius: 3px; }"
-            "QProgressBar::chunk { background: #00f3ff; border-radius: 2px; }")
+            "QProgressBar { background: #1e1e21; border: none; border-radius: 5px; }"
+            "QProgressBar::chunk { background: #00f3ff; border-radius: 5px; }")
         sb.addPermanentWidget(self._token_bar)
 
         self._status_tokens = QLabel("0 / 24K tok")
-        self._status_tokens.setStyleSheet("color: #00f3ff; padding: 0 8px; font-size: 11px;")
+        self._status_tokens.setStyleSheet(
+            "color: #52525b; padding: 0 8px; font-size: 11px;")
         sb.addPermanentWidget(self._status_tokens)
 
         # Periodic git branch refresh
@@ -336,14 +346,16 @@ class CodingAgentIDE(QMainWindow):
             ("Save File", self.save_current_file),
             ("Save File As…", self.save_current_file_as),
             ("Run Script…", self.select_and_run_script),
-            ("Settings…", self.open_settings),
-            ("Toggle Debug Panel", self._toggle_debug_drawer),
+            ("Settings…  (Ctrl+,)", self.open_settings),
+            ("Toggle Files  (Ctrl+B)", self._toggle_file_tree),
+            ("Toggle Editor  (Ctrl+Shift+E)", self._toggle_editor),
+            ("Toggle Debug Panel  (Ctrl+`)", self._toggle_debug_drawer),
             ("Search in Project  (Ctrl+Shift+F)", self._toggle_search_panel),
             ("Conversation History  (Ctrl+H)", self._toggle_history_sidebar),
             ("Go to File  (Ctrl+P)", self._open_file_switcher),
             ("Code Outline  (Ctrl+Shift+L)", self._toggle_code_outline),
-            ("Find & Replace", self.editor_panel._toggle_find),
-            ("Clear Chat Context", self.chat_panel.clear_context),
+            ("Find & Replace  (Ctrl+F)", self.editor_panel._toggle_find),
+            ("New Chat", self.chat_panel.clear_context),
             ("Export Conversation…", self._export_conversation),
             ("Terminal Mode", self._enter_terminal_mode),
             ("About", self.show_about),
@@ -362,7 +374,9 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     def _toggle_search_panel(self):
         self.search_panel.toggle()
+        self._ib_search.setChecked(self.search_panel.isVisible())
         if self.search_panel.isVisible():
+            self._ensure_right_panel_visible(True)
             sizes = self.right_splitter.sizes()
             if sizes[1] < 120:
                 sizes[1] = 250
@@ -385,10 +399,13 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     def _toggle_history_sidebar(self):
         self.history_sidebar.toggle()
+        self._ib_history.setChecked(self.history_sidebar.isVisible())
         if self.history_sidebar.isVisible():
-            sizes = self.left_splitter.sizes()
+            sizes = self.main_splitter.sizes()
             if sizes[0] < 120:
-                self.left_splitter.setSizes([200, max(sizes[1], 200)])
+                sizes[0] = 220
+                sizes[1] = max(sizes[1] - 220, 300)
+                self.main_splitter.setSizes(sizes)
             self._refresh_history()
 
     def _refresh_history(self):
@@ -400,7 +417,9 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     def _toggle_code_outline(self):
         self.code_outline.toggle()
+        self._ib_outline.setChecked(self.code_outline.isVisible())
         if self.code_outline.isVisible():
+            self._ensure_right_panel_visible(True)
             sizes = self.bottom_right.sizes()
             if sizes[1] < 100:
                 self.bottom_right.setSizes([sizes[0], 200])
@@ -490,7 +509,7 @@ class CodingAgentIDE(QMainWindow):
 
         conv_file = self.chat_panel._conversation_file()
         project_root = self.project_path or os.getcwd()
-        model = self.chat_panel.model_combo.currentText()
+        model = self.chat_panel._get_full_model_name()
         mode = self.chat_panel.mode_combo.currentText()
 
         cli_script = os.path.join(
@@ -605,13 +624,12 @@ class CodingAgentIDE(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         drawer_width = 450
-        toolbar_height = (
-            self.toolbar_widget.height() if hasattr(self, "toolbar_widget") else 50)
+        top_offset = (
+            (self._icon_bar.height() if hasattr(self, "_icon_bar") else 34)
+            + self.menuBar().height())
         self.debug_drawer.setGeometry(
-            self.width() - drawer_width,
-            toolbar_height + self.menuBar().height(),
-            drawer_width,
-            self.height() - toolbar_height - self.menuBar().height())
+            self.width() - drawer_width, top_offset,
+            drawer_width, self.height() - top_offset)
         self.debug_drawer.raise_()
 
     # ------------------------------------------------------------------
@@ -695,6 +713,8 @@ class CodingAgentIDE(QMainWindow):
             set_project_root(folder)
             self.search_panel.set_root(folder)
             self.setWindowTitle(f"VoxAI Coding Agent IDE — {folder}")
+            if hasattr(self, '_title_label'):
+                self._title_label.setText(os.path.basename(folder))
             self.chat_panel.clear_context()
             self.chat_panel.add_message("system", f"Switched project to: {folder}")
 
@@ -702,45 +722,81 @@ class CodingAgentIDE(QMainWindow):
         self.select_project_folder()
 
     # ------------------------------------------------------------------
-    # Toolbar
+    # Slim icon bar (replaces old toolbar)
     # ------------------------------------------------------------------
-    def create_global_toolbar(self):
-        self.toolbar_widget = QWidget()
-        self.toolbar_widget.setStyleSheet(
-            "background-color: #2D2D30; border-bottom: 1px solid #3E3E42;")
-        self.toolbar_widget.setFixedHeight(50)
-        layout = QHBoxLayout(self.toolbar_widget)
-        layout.setContentsMargins(10, 5, 10, 5)
+    def _create_icon_bar(self):
+        self._icon_bar = QWidget()
+        self._icon_bar.setFixedHeight(34)
+        self._icon_bar.setStyleSheet(
+            "background: #111113; border-bottom: 1px solid #27272a;")
+        lay = QHBoxLayout(self._icon_bar)
+        lay.setContentsMargins(8, 2, 8, 2)
+        lay.setSpacing(2)
 
-        layout.addStretch()
+        _ib = (
+            "QPushButton { background: transparent; color: #71717a; border: none; "
+            "border-radius: 4px; padding: 4px 8px; font-size: 14px; }"
+            "QPushButton:hover { background: #27272a; color: #e4e4e7; }"
+            "QPushButton:checked { color: #00f3ff; background: #1a1a2e; }")
 
-        btn_css = (
-            "QPushButton { background-color: #18181b; color: %s; "
-            "border: 1px solid %s; border-radius: 4px; font-weight: 900; "
-            "font-family: 'Consolas', monospace; text-transform: uppercase; "
-            "letter-spacing: 1px; padding: 0 10px; }"
-            "QPushButton:hover { background-color: #27272a; color: #00f3ff; "
-            "border-color: #00f3ff; }")
+        def _icon_btn(icon: str, tip: str, fn, checkable: bool = False):
+            b = QPushButton(icon)
+            b.setToolTip(tip)
+            b.setFixedSize(30, 28)
+            b.setStyleSheet(_ib)
+            b.setCheckable(checkable)
+            b.clicked.connect(fn)
+            return b
 
-        self.run_btn = QPushButton("Run Script")
-        self.run_btn.setFixedSize(140, 32)
-        self.run_btn.setStyleSheet(btn_css % ("#ff9900", "#ff9900"))
-        glow = QGraphicsDropShadowEffect()
-        glow.setBlurRadius(15)
-        glow.setOffset(0, 0)
-        glow.setColor(QColor("#00f3ff"))
-        self.run_btn.setGraphicsEffect(glow)
-        self.run_btn.clicked.connect(self.select_and_run_script)
-        layout.addWidget(self.run_btn)
+        self._ib_files = _icon_btn("📁", "Toggle Files  (Ctrl+B)", self._toggle_file_tree, True)
+        self._ib_editor = _icon_btn("📝", "Toggle Editor", self._toggle_editor, True)
+        self._ib_search = _icon_btn("🔍", "Search  (Ctrl+Shift+F)", self._toggle_search_panel, True)
+        self._ib_outline = _icon_btn("🧭", "Code Outline  (Ctrl+Shift+L)", self._toggle_code_outline, True)
+        self._ib_history = _icon_btn("💬", "History  (Ctrl+H)", self._toggle_history_sidebar, True)
+        self._ib_terminal = _icon_btn("⌨", "Terminal Mode", self._enter_terminal_mode)
+        self._ib_run = _icon_btn("▶", "Run Script", self.select_and_run_script)
+        self._ib_settings = _icon_btn("⚙", "Settings  (Ctrl+,)", self.open_settings)
 
-        self.terminal_btn = QPushButton("Terminal")
-        self.terminal_btn.setFixedSize(120, 32)
-        self.terminal_btn.setStyleSheet(btn_css % ("#00f3ff", "#00f3ff"))
-        self.terminal_btn.setToolTip("Switch to Terminal Mode (minimize to tray)")
-        self.terminal_btn.clicked.connect(self._enter_terminal_mode)
-        layout.addWidget(self.terminal_btn)
+        for b in (self._ib_files, self._ib_editor, self._ib_search,
+                  self._ib_outline, self._ib_history):
+            lay.addWidget(b)
 
-        layout.addStretch()
+        lay.addStretch()
+
+        # Centred project title label
+        self._title_label = QLabel("VoxAI")
+        self._title_label.setStyleSheet(
+            "color: #52525b; font-size: 11px; font-family: 'Consolas', monospace;")
+        self._title_label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._title_label)
+
+        lay.addStretch()
+
+        for b in (self._ib_run, self._ib_terminal, self._ib_settings):
+            lay.addWidget(b)
+
+    # Panel visibility toggles used by icon bar
+    def _toggle_file_tree(self):
+        vis = not self.tree_panel.isVisible()
+        self.tree_panel.setVisible(vis)
+        self._ib_files.setChecked(vis)
+        self._ensure_right_panel_visible(vis)
+
+    def _toggle_editor(self):
+        vis = not self.editor_panel.isVisible()
+        self.editor_panel.setVisible(vis)
+        self._ib_editor.setChecked(vis)
+        self._ensure_right_panel_visible(vis)
+
+    def _ensure_right_panel_visible(self, opening: bool):
+        """When opening a right-side panel, make sure the splitter gives it space."""
+        if opening:
+            sizes = self.main_splitter.sizes()
+            if sizes[2] < 200:
+                total = sum(sizes)
+                sizes[2] = int(total * 0.4)
+                sizes[1] = total - sizes[0] - sizes[2]
+                self.main_splitter.setSizes(sizes)
 
     def open_settings(self):
         from ui.settings_dialog import SettingsDialog
@@ -792,16 +848,23 @@ class CodingAgentIDE(QMainWindow):
         view_menu = menu.addMenu("&View")
         view_menu.addAction("Command Palette", self._open_command_palette,
                             QKeySequence("Ctrl+Shift+P"))
+        view_menu.addSeparator()
+        view_menu.addAction("Toggle Files", self._toggle_file_tree,
+                            QKeySequence("Ctrl+B"))
+        view_menu.addAction("Toggle Editor", self._toggle_editor,
+                            QKeySequence("Ctrl+Shift+E"))
         view_menu.addAction("Toggle Debug Panel", self._toggle_debug_drawer,
                             QKeySequence("Ctrl+`"))
         view_menu.addAction("Search in Project", self._toggle_search_panel,
                             QKeySequence("Ctrl+Shift+F"))
         view_menu.addAction("Conversation History", self._toggle_history_sidebar,
                             QKeySequence("Ctrl+H"))
+        view_menu.addSeparator()
         view_menu.addAction("Go to File", self._open_file_switcher,
                             QKeySequence("Ctrl+P"))
         view_menu.addAction("Code Outline", self._toggle_code_outline,
                             QKeySequence("Ctrl+Shift+L"))
+        view_menu.addSeparator()
         view_menu.addAction("Terminal Mode", self._enter_terminal_mode)
 
         options_menu = menu.addMenu("&Options")
@@ -894,57 +957,89 @@ ABOUT_TEXT = (
     "<h4>Providers</h4>"
     "<p>OpenAI, Anthropic, Google, OpenRouter, DeepSeek, and more.</p>"
     "<h4>Terminal Mode</h4>"
-    "<p>Press <b>Terminal</b> in the toolbar to switch to a Claude Code "
-    "style CLI. The IDE minimizes to tray.</p><hr>"
+    "<p>Click the <b>⌨</b> icon in the top bar (or use the command palette) "
+    "to switch to a Claude Code-style CLI. The IDE minimizes to tray.</p><hr>"
     "<p><i>Built for the Vibe-Coder.</i></p>"
 )
 
 _ = lambda x: x  # no-op translation stub
 
 _GLOBAL_STYLE = """
-    QMainWindow { background-color: #18181b; color: #e4e4e7; }
+    QMainWindow { background-color: #111113; color: #e4e4e7; }
     QWidget {
         font-family: 'Segoe UI', 'Inter', sans-serif;
         font-size: 13px; color: #e4e4e7;
     }
+
+    /* ── Scrollbars (slim & subtle) ── */
     QScrollBar:vertical {
-        border: none; background: #18181b; width: 12px; margin: 0;
+        border: none; background: transparent; width: 8px; margin: 0;
     }
     QScrollBar::handle:vertical {
-        background: #3f3f46; min-height: 20px; border-radius: 6px;
-        margin: 2px; border: 1px solid #27272a;
+        background: #3f3f46; min-height: 24px; border-radius: 4px;
     }
-    QScrollBar::handle:vertical:hover { background: #52525b; border-color: #00f3ff; }
+    QScrollBar::handle:vertical:hover { background: #52525b; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     QScrollBar:horizontal {
-        border: none; background: #18181b; height: 12px; margin: 0;
+        border: none; background: transparent; height: 8px; margin: 0;
     }
     QScrollBar::handle:horizontal {
-        background: #3f3f46; min-width: 20px; border-radius: 6px;
-        margin: 2px; border: 1px solid #27272a;
+        background: #3f3f46; min-width: 24px; border-radius: 4px;
     }
-    QScrollBar::handle:horizontal:hover { background: #52525b; border-color: #00f3ff; }
+    QScrollBar::handle:horizontal:hover { background: #52525b; }
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-    QSplitter::handle { background-color: #3f3f46; height: 6px; width: 6px; }
-    QSplitter::handle:horizontal { width: 6px; }
-    QSplitter::handle:vertical { height: 6px; }
-    QSplitter::handle:hover { background-color: #ff9900; }
-    QSplitter::handle:pressed { background-color: #00f3ff; }
+
+    /* ── Splitters (tight 2px handles) ── */
+    QSplitter::handle { background: #27272a; }
+    QSplitter::handle:horizontal { width: 2px; }
+    QSplitter::handle:vertical { height: 2px; }
+    QSplitter::handle:hover { background: #3f3f46; }
+    QSplitter::handle:pressed { background: #00f3ff; }
+
+    /* ── Tooltips ── */
     QToolTip {
-        background-color: #27272a; color: #e4e4e7;
-        border: 1px solid #00f3ff; padding: 4px; border-radius: 4px;
+        background: #1e1e21; color: #e4e4e7;
+        border: 1px solid #3f3f46; padding: 5px 8px; border-radius: 6px;
+        font-size: 12px;
     }
-    QMenuBar { background-color: #18181b; color: #e4e4e7; border-bottom: 1px solid #27272a; }
-    QMenuBar::item { background: transparent; padding: 8px 12px; }
-    QMenuBar::item:selected { background-color: #27272a; border-bottom: 2px solid #00f3ff; }
-    QMenu { background-color: #18181b; border: 1px solid #3f3f46; padding: 5px; }
-    QMenu::item { padding: 6px 24px 6px 12px; border-radius: 4px; }
-    QMenu::item:selected { background-color: #27272a; color: #00f3ff; border: 1px solid #00f3ff; }
-    QMenu::separator { height: 1px; background: #3f3f46; margin: 4px 0; }
-    QTreeView, QListView { background-color: #1c1c1f; border: none; outline: none; }
-    QTreeView::item, QListView::item { padding: 6px; border-radius: 4px; margin-bottom: 2px; }
-    QTreeView::item:hover, QListView::item:hover { background-color: #2a2a2d; }
+
+    /* ── Menu bar ── */
+    QMenuBar {
+        background: #111113; color: #a1a1aa;
+        border-bottom: 1px solid #1e1e21; font-size: 12px;
+    }
+    QMenuBar::item { background: transparent; padding: 6px 10px; border-radius: 4px; }
+    QMenuBar::item:selected { background: #1e1e21; color: #e4e4e7; }
+
+    /* ── Menus ── */
+    QMenu {
+        background: #1e1e21; border: 1px solid #27272a;
+        border-radius: 8px; padding: 4px;
+    }
+    QMenu::item {
+        padding: 6px 28px 6px 12px; border-radius: 4px; color: #a1a1aa;
+    }
+    QMenu::item:selected { background: #27272a; color: #e4e4e7; }
+    QMenu::separator { height: 1px; background: #27272a; margin: 4px 8px; }
+
+    /* ── Tree / List views ── */
+    QTreeView, QListView {
+        background: #141416; border: none; outline: none;
+    }
+    QTreeView::item, QListView::item {
+        padding: 5px 8px; border-radius: 4px;
+    }
+    QTreeView::item:hover, QListView::item:hover { background: #1e1e21; }
     QTreeView::item:selected, QListView::item:selected {
-        background-color: #2f2f35; color: #00f3ff; border-left: 2px solid #00f3ff;
+        background: #1a1a2e; color: #00f3ff;
     }
+
+    /* ── Tab widgets ── */
+    QTabWidget::pane { border: none; background: #141416; }
+    QTabBar::tab {
+        background: #1e1e21; color: #71717a; border: none;
+        padding: 6px 14px; border-radius: 6px 6px 0 0; margin-right: 2px;
+    }
+    QTabBar::tab:selected { background: #141416; color: #e4e4e7; }
+    QTabBar::tab:hover { color: #a1a1aa; }
 """

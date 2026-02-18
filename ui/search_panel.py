@@ -54,20 +54,20 @@ class SearchPanel(QWidget):
         self.query_input = QLineEdit()
         self.query_input.setPlaceholderText("Search across project…")
         self.query_input.setStyleSheet(
-            "QLineEdit { background: #27272a; color: #e4e4e7; "
-            "border: 1px solid #3f3f46; border-radius: 4px; padding: 6px; "
+            "QLineEdit { background: #1e1e21; color: #e4e4e7; "
+            "border: 1px solid #27272a; border-radius: 6px; padding: 7px 10px; "
             "font-family: 'Consolas', monospace; font-size: 12px; }"
-            "QLineEdit:focus { border-color: #00f3ff; }")
+            "QLineEdit:focus { border-color: #3f3f46; }")
         self.query_input.returnPressed.connect(self._do_search)
         input_row.addWidget(self.query_input)
 
         self.search_btn = QPushButton("Search")
         self.search_btn.setFixedWidth(70)
         self.search_btn.setStyleSheet(
-            "QPushButton { background: #007fd4; color: white; border: none; "
-            "border-radius: 4px; padding: 6px; font-weight: bold; "
+            "QPushButton { background: #27272a; color: #00f3ff; border: 1px solid #3f3f46; "
+            "border-radius: 6px; padding: 6px; font-weight: bold; "
             "font-family: 'Consolas', monospace; font-size: 11px; }"
-            "QPushButton:hover { background: #0098ff; }")
+            "QPushButton:hover { background: #1a1a2e; border-color: #00f3ff; }")
         self.search_btn.clicked.connect(self._do_search)
         input_row.addWidget(self.search_btn)
         layout.addLayout(input_row)
@@ -88,8 +88,8 @@ class SearchPanel(QWidget):
         self.file_filter.setPlaceholderText("File filter (e.g. *.py)")
         self.file_filter.setFixedWidth(140)
         self.file_filter.setStyleSheet(
-            "QLineEdit { background: #27272a; color: #a1a1aa; "
-            "border: 1px solid #3f3f46; border-radius: 3px; padding: 3px; "
+            "QLineEdit { background: #1e1e21; color: #a1a1aa; "
+            "border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; "
             "font-family: 'Consolas', monospace; font-size: 11px; }")
         opts_row.addWidget(self.file_filter)
 
@@ -105,12 +105,12 @@ class SearchPanel(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setStyleSheet("""
             QTreeWidget {
-                background: #1e1e1e; color: #d4d4d8; border: 1px solid #27272a;
+                background: #141416; color: #a1a1aa; border: none;
                 font-family: 'Consolas', monospace; font-size: 12px;
             }
-            QTreeWidget::item { padding: 2px 0; }
-            QTreeWidget::item:hover { background: #27272a; }
-            QTreeWidget::item:selected { background: #264f78; color: #ffffff; }
+            QTreeWidget::item { padding: 3px 0; border-radius: 3px; }
+            QTreeWidget::item:hover { background: #1e1e21; color: #e4e4e7; }
+            QTreeWidget::item:selected { background: #1a1a2e; color: #00f3ff; }
         """)
         self.tree.itemDoubleClicked.connect(self._on_item_clicked)
         layout.addWidget(self.tree, 1)

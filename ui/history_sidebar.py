@@ -39,10 +39,10 @@ class HistorySidebar(QWidget):
         new_btn = QPushButton("+ New")
         new_btn.setFixedWidth(60)
         new_btn.setStyleSheet(
-            "QPushButton { background: #007fd4; color: white; border: none; "
-            "border-radius: 3px; padding: 4px 8px; font-weight: bold; "
+            "QPushButton { background: #27272a; color: #00f3ff; border: 1px solid #3f3f46; "
+            "border-radius: 6px; padding: 4px 8px; font-weight: bold; "
             "font-family: 'Consolas', monospace; font-size: 11px; }"
-            "QPushButton:hover { background: #0098ff; }")
+            "QPushButton:hover { background: #1a1a2e; border-color: #00f3ff; }")
         new_btn.clicked.connect(self.new_conversation.emit)
         hdr.addWidget(new_btn)
         layout.addLayout(hdr)
@@ -51,12 +51,12 @@ class HistorySidebar(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet("""
             QListWidget {
-                background: #1e1e1e; color: #d4d4d8; border: 1px solid #27272a;
+                background: #141416; color: #a1a1aa; border: none;
                 font-family: 'Consolas', monospace; font-size: 12px;
             }
-            QListWidget::item { padding: 6px 8px; border-bottom: 1px solid #27272a; }
-            QListWidget::item:hover { background: #27272a; }
-            QListWidget::item:selected { background: #264f78; color: #ffffff; }
+            QListWidget::item { padding: 8px 10px; border-radius: 4px; margin: 1px 0; }
+            QListWidget::item:hover { background: #1e1e21; color: #e4e4e7; }
+            QListWidget::item:selected { background: #1a1a2e; color: #00f3ff; }
         """)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.list_widget, 1)
@@ -64,10 +64,10 @@ class HistorySidebar(QWidget):
         # Delete button
         del_btn = QPushButton("Delete Selected")
         del_btn.setStyleSheet(
-            "QPushButton { background: #3f3f46; color: #ef4444; border: none; "
-            "border-radius: 3px; padding: 4px 8px; "
+            "QPushButton { background: transparent; color: #71717a; border: 1px solid #27272a; "
+            "border-radius: 6px; padding: 4px 8px; "
             "font-family: 'Consolas', monospace; font-size: 11px; }"
-            "QPushButton:hover { background: #ef4444; color: white; }")
+            "QPushButton:hover { background: #2a1a1a; color: #ef4444; border-color: #ef4444; }")
         del_btn.clicked.connect(self._delete_selected)
         layout.addWidget(del_btn)
 

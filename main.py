@@ -41,6 +41,11 @@ logging.basicConfig(
     ]
 )
 
+# Silence noisy third-party / internal loggers
+for _noisy in ("urllib3", "urllib3.connectionpool", "requests",
+               "core.local_embeddings", "PIL", "matplotlib"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 log = logging.getLogger(__name__)
 
 def main():

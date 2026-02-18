@@ -33,6 +33,9 @@ Vox_RIG/storage/
 Vox_RIG/vox_storage/
 Vox_RIG/search_engine/scripts/.cache/
 
+# ===== Compiled Go binaries =====
+Vox_RIG/search_engine/vox-vector-engine*
+
 # ===== Secrets =====
 keys/secrets.json
 

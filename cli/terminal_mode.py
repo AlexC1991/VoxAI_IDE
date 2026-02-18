@@ -3,25 +3,18 @@
 VoxAI Terminal Mode — Claude Code-style CLI.
 
 Launched from the GUI (or standalone). Shares conversation context via the
-project's .vox/conversation.json file.  Streams AI responses to the console
-with ANSI colors.
-
-Controls:
-    /exit  or Ctrl+C  — quit and return to GUI
-    /clear             — clear context
-    /export <file>     — export conversation
-    /mode              — toggle Phased / Siege
-    /help              — show commands
+project's .vox/history/<conv>.json file.  Streams AI responses with ANSI
+colors and supports slash commands for git, model switching, and more.
 """
 
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
-# Ensure project root is importable
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 if _PROJECT_ROOT not in sys.path:
@@ -48,16 +41,15 @@ class C:
 
 
 def _enable_ansi_windows():
-    """Enable VT100 escape processing on Windows 10+."""
     if os.name != "nt":
         return
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        handle = kernel32.GetStdHandle(-11)
         mode = ctypes.c_ulong()
         kernel32.GetConsoleMode(handle, ctypes.byref(mode))
-        kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        kernel32.SetConsoleMode(handle, mode.value | 0x0004)
     except Exception:
         pass
 
@@ -79,24 +71,66 @@ BANNER = rf"""
 """
 
 HELP_TEXT = f"""
-{C.CYAN}Commands:{C.RESET}
-  {C.ORANGE}/exit{C.RESET}          — Quit terminal, return to GUI
-  {C.ORANGE}/clear{C.RESET}         — Clear conversation context
-  {C.ORANGE}/export <file>{C.RESET} — Export conversation to file
-  {C.ORANGE}/mode{C.RESET}          — Toggle Phased / Siege mode
-  {C.ORANGE}/model{C.RESET}         — Show current model
-  {C.ORANGE}/status{C.RESET}        — Show git status
-  {C.ORANGE}/help{C.RESET}          — Show this help
+{C.CYAN}{C.BOLD}Chat{C.RESET}
+  Just type a message to talk to VoxAI.
+
+{C.CYAN}{C.BOLD}General{C.RESET}
+  {C.ORANGE}/help{C.RESET}               Show this help
+  {C.ORANGE}/exit{C.RESET}               Quit terminal, return to GUI
+  {C.ORANGE}/clear{C.RESET}              Clear conversation context
+  {C.ORANGE}/export <file>{C.RESET}      Export conversation to file
+
+{C.CYAN}{C.BOLD}Model & Mode{C.RESET}
+  {C.ORANGE}/model{C.RESET}              Show current model
+  {C.ORANGE}/model <name>{C.RESET}       Switch to a different model
+  {C.ORANGE}/models{C.RESET}             List all enabled models
+  {C.ORANGE}/mode{C.RESET}               Toggle Phased / Siege mode
+
+{C.CYAN}{C.BOLD}Git{C.RESET}
+  {C.ORANGE}/status{C.RESET}             git status --short
+  {C.ORANGE}/branch{C.RESET}             Show current branch
+  {C.ORANGE}/branches{C.RESET}           List all branches
+  {C.ORANGE}/log [n]{C.RESET}            git log --oneline (default 10)
+  {C.ORANGE}/diff [file]{C.RESET}        git diff (optionally for one file)
+  {C.ORANGE}/commit <msg>{C.RESET}       git add -A && git commit -m <msg>
+  {C.ORANGE}/push [remote] [branch]{C.RESET}
+  {C.ORANGE}/pull [remote] [branch]{C.RESET}
+  {C.ORANGE}/fetch [remote]{C.RESET}
+  {C.ORANGE}/stash{C.RESET}              git stash
+  {C.ORANGE}/stash pop{C.RESET}          git stash pop
+  {C.ORANGE}/checkout <branch>{C.RESET}  Switch branch
+
+{C.CYAN}{C.BOLD}Project{C.RESET}
+  {C.ORANGE}/files [path]{C.RESET}       List project files
+  {C.ORANGE}/search <query>{C.RESET}     Search across files
+  {C.ORANGE}/run <command>{C.RESET}      Execute a shell command
+  {C.ORANGE}/index{C.RESET}              Re-index project for RAG
+  {C.ORANGE}/tokens{C.RESET}             Show conversation token estimate
 """
 
 
 def _shell_quote(s: str) -> str:
-    """Escape a string for safe shell interpolation."""
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def _git(args: list[str], cwd: str) -> str:
+    """Run a git command and return stdout or error string."""
+    try:
+        r = subprocess.run(
+            ["git"] + args, cwd=cwd,
+            capture_output=True, text=True, timeout=30)
+        out = r.stdout.strip()
+        if r.returncode != 0 and r.stderr.strip():
+            out = r.stderr.strip() if not out else out + "\n" + r.stderr.strip()
+        return out or "(no output)"
+    except subprocess.TimeoutExpired:
+        return "(git command timed out)"
+    except Exception as e:
+        return f"(error: {e})"
+
+
 # ---------------------------------------------------------------------------
-# Core engine (reuses project's modules)
+# Core engine
 # ---------------------------------------------------------------------------
 class TerminalEngine:
     def __init__(self, project_root: str, conv_file: str,
@@ -106,22 +140,55 @@ class TerminalEngine:
         set_project_root(project_root)
 
         from core.settings import SettingsManager
-        from core.ai_client import AIClient
-        from core.code_parser import CodeParser
-        from core.agent_tools import AgentToolHandler
-        from core.prompts import SystemPrompts
 
         self.settings = SettingsManager()
         self.settings.set_selected_model(model)
         self.project_root = project_root
         self.conv_file = conv_file
         self.model = model
-        self.mode = mode  # "phased" or "siege"
+        self.mode = mode
         self.messages: list[dict] = []
         self.tool_loop_limit = 25 if "siege" in mode.lower() else 3
 
         self._load_conversation()
 
+    # ── Model management ──
+    def list_models(self):
+        models = self.settings.get_enabled_models() or []
+        if not models:
+            print(f"  {C.YELLOW}No models configured.{C.RESET}")
+            return
+        print(f"  {C.CYAN}Enabled models:{C.RESET}")
+        for i, m in enumerate(models, 1):
+            marker = f"{C.GREEN}→{C.RESET}" if m == self.model else " "
+            print(f"  {marker} {C.GRAY}{i}.{C.RESET} {m}")
+
+    def switch_model(self, name: str):
+        models = self.settings.get_enabled_models() or []
+        # Match by number
+        try:
+            idx = int(name) - 1
+            if 0 <= idx < len(models):
+                self.model = models[idx]
+                self.settings.set_selected_model(self.model)
+                print(f"  {C.GREEN}Switched to: {self.model}{C.RESET}")
+                return
+        except ValueError:
+            pass
+        # Match by substring
+        matches = [m for m in models if name.lower() in m.lower()]
+        if len(matches) == 1:
+            self.model = matches[0]
+            self.settings.set_selected_model(self.model)
+            print(f"  {C.GREEN}Switched to: {self.model}{C.RESET}")
+        elif len(matches) > 1:
+            print(f"  {C.YELLOW}Ambiguous — matches:{C.RESET}")
+            for m in matches:
+                print(f"    {m}")
+        else:
+            print(f"  {C.RED}No model matching '{name}'. Use /models to see available.{C.RESET}")
+
+    # ── Conversation ──
     def _load_conversation(self):
         if self.conv_file and os.path.exists(self.conv_file):
             try:
@@ -160,6 +227,12 @@ class TerminalEngine:
             self.tool_loop_limit = 25
         print(f"{C.ORANGE}  Mode: {self.mode.upper()}{C.RESET}")
 
+    def show_tokens(self):
+        total_chars = sum(len(m.get("content", "")) for m in self.messages)
+        est_tokens = total_chars // 4
+        print(f"  {C.CYAN}Messages: {len(self.messages)}  |  "
+              f"~{est_tokens:,} tokens  ({total_chars:,} chars){C.RESET}")
+
     def export(self, path: str):
         try:
             abs_path = os.path.abspath(path)
@@ -181,8 +254,8 @@ class TerminalEngine:
         except Exception as e:
             print(f"{C.RED}  Export failed: {e}{C.RESET}")
 
+    # ── AI chat ──
     def chat(self, user_text: str):
-        """Send user message, stream AI response, handle tools."""
         self.messages.append({"role": "user", "content": user_text})
 
         from core.prompts import SystemPrompts
@@ -223,11 +296,8 @@ class TerminalEngine:
                 break
 
             self.messages.append({"role": "assistant", "content": response})
+            re.sub(r'<thought>.*?</thought>\s*', '', response, flags=re.DOTALL).strip()
 
-            # Strip <thought> blocks for display (already streamed)
-            display = re.sub(r'<thought>.*?</thought>\s*', '', response, flags=re.DOTALL).strip()
-
-            # Parse tool calls
             tools = CodeParser.parse_tool_calls(response)
             if not tools:
                 break
@@ -249,7 +319,6 @@ class TerminalEngine:
         self.save_conversation()
 
     def _stream_response(self, ai, history: list) -> str:
-        """Stream AI response to terminal with ANSI colors."""
         print(f"\n{C.CYAN}{C.BOLD}VoxAI{C.RESET} ", end="", flush=True)
         full_response = ""
         in_thought = False
@@ -259,7 +328,6 @@ class TerminalEngine:
                     continue
                 full_response += chunk
 
-                # Dim <thought> blocks
                 if '<thought>' in chunk:
                     in_thought = True
                     chunk = chunk.replace('<thought>', '')
@@ -271,7 +339,6 @@ class TerminalEngine:
                     if not chunk.strip():
                         continue
 
-                # Colorize tool calls inline
                 clean = chunk.replace('<thought>', '').replace('</thought>', '')
                 if in_thought:
                     print(f"{C.GRAY}{clean}{C.RESET}", end="", flush=True)
@@ -282,11 +349,10 @@ class TerminalEngine:
             print(f"\n{C.YELLOW}  [Interrupted]{C.RESET}")
         except Exception as e:
             print(f"\n{C.RED}  [Error: {e}]{C.RESET}")
-        print()  # newline after response
+        print()
         return full_response
 
     def _execute_tools(self, tools: list) -> str:
-        """Execute tool calls and return combined output."""
         from core.agent_tools import AgentToolHandler
         outputs = []
 
@@ -299,7 +365,7 @@ class TerminalEngine:
                 if cmd == 'read_file':
                     path = args.get('path')
                     start = int(args.get('start_line', 1))
-                    end = int(args.get('end_line', 300))
+                    end = int(args.get('end_line', 150))
                     result = AgentToolHandler.read_file(path, start_line=start, end_line=end)
                     outputs.append(f"Read '{path}':\n{result}")
                     print(f" {C.GREEN}✓{C.RESET} {path}")
@@ -444,6 +510,168 @@ class TerminalEngine:
 
 
 # ---------------------------------------------------------------------------
+# Slash-command dispatcher
+# ---------------------------------------------------------------------------
+def _handle_slash(text: str, engine: TerminalEngine) -> bool:
+    """Handle a slash command. Returns True if handled, False otherwise."""
+    lower = text.lower()
+    parts = text.split(maxsplit=1)
+    cmd = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    # ── General ──
+    if cmd in ("/exit", "/quit"):
+        print(f"{C.YELLOW}  Returning to GUI...{C.RESET}")
+        return "EXIT"
+
+    if cmd == "/clear":
+        engine.clear()
+        return True
+
+    if cmd == "/help":
+        print(HELP_TEXT)
+        return True
+
+    # ── Model & Mode ──
+    if cmd == "/mode":
+        engine.toggle_mode()
+        return True
+
+    if cmd == "/model":
+        if rest:
+            engine.switch_model(rest)
+        else:
+            print(f"  {C.CYAN}Model: {engine.model}{C.RESET}")
+        return True
+
+    if cmd == "/models":
+        engine.list_models()
+        return True
+
+    if cmd == "/tokens":
+        engine.show_tokens()
+        return True
+
+    # ── Git ──
+    root = engine.project_root
+
+    if cmd == "/status":
+        print(_git(["status", "--short"], root))
+        return True
+
+    if cmd == "/branch":
+        print(_git(["rev-parse", "--abbrev-ref", "HEAD"], root))
+        return True
+
+    if cmd == "/branches":
+        print(_git(["branch", "-a"], root))
+        return True
+
+    if cmd == "/log":
+        n = rest if rest.isdigit() else "10"
+        print(_git(["log", "--oneline", "-n", n], root))
+        return True
+
+    if cmd == "/diff":
+        args = ["diff"]
+        if rest:
+            args.append(rest)
+        print(_git(args, root))
+        return True
+
+    if cmd == "/commit":
+        if not rest:
+            print(f"  {C.RED}Usage: /commit <message>{C.RESET}")
+            return True
+        print(_git(["add", "-A"], root))
+        print(_git(["commit", "-m", rest], root))
+        return True
+
+    if cmd == "/push":
+        args = ["push"]
+        if rest:
+            args.extend(rest.split())
+        else:
+            args.extend(["origin", "HEAD"])
+        print(_git(args, root))
+        return True
+
+    if cmd == "/pull":
+        args = ["pull"]
+        if rest:
+            args.extend(rest.split())
+        print(_git(args, root))
+        return True
+
+    if cmd == "/fetch":
+        args = ["fetch"]
+        if rest:
+            args.append(rest)
+        print(_git(args, root))
+        return True
+
+    if cmd == "/stash":
+        if rest.lower() == "pop":
+            print(_git(["stash", "pop"], root))
+        elif rest.lower() == "list":
+            print(_git(["stash", "list"], root))
+        elif rest:
+            print(_git(["stash", rest], root))
+        else:
+            print(_git(["stash"], root))
+        return True
+
+    if cmd == "/checkout":
+        if not rest:
+            print(f"  {C.RED}Usage: /checkout <branch>{C.RESET}")
+            return True
+        print(_git(["checkout", rest], root))
+        return True
+
+    # ── Project ──
+    if cmd == "/files":
+        from core.agent_tools import AgentToolHandler
+        result = AgentToolHandler.list_files(rest or ".")
+        print(result)
+        return True
+
+    if cmd == "/search":
+        if not rest:
+            print(f"  {C.RED}Usage: /search <query>{C.RESET}")
+            return True
+        from core.agent_tools import AgentToolHandler
+        result = AgentToolHandler.search_files(rest, ".")
+        print(result)
+        return True
+
+    if cmd == "/run":
+        if not rest:
+            print(f"  {C.RED}Usage: /run <command>{C.RESET}")
+            return True
+        from core.agent_tools import AgentToolHandler
+        result = AgentToolHandler.execute_command(rest)
+        print(result)
+        return True
+
+    if cmd == "/index":
+        try:
+            from core.indexer import ProjectIndexer
+            indexer = ProjectIndexer()
+            indexer.index_project(engine.project_root)
+            print(f"  {C.GREEN}Indexing complete.{C.RESET}")
+        except Exception as e:
+            print(f"  {C.RED}Index failed: {e}{C.RESET}")
+        return True
+
+    if cmd.startswith("/export"):
+        path = rest or "conversation_export.md"
+        engine.export(path)
+        return True
+
+    return False  # not a recognized command
+
+
+# ---------------------------------------------------------------------------
 # Main REPL
 # ---------------------------------------------------------------------------
 def main():
@@ -480,42 +708,15 @@ def main():
         if not text:
             continue
 
-        if text.lower() in ("/exit", "/quit", "exit", "quit"):
-            print(f"{C.YELLOW}  Returning to GUI...{C.RESET}")
-            break
-
-        if text.lower() == "/clear":
-            engine.clear()
-            continue
-
-        if text.lower() == "/help":
-            print(HELP_TEXT)
-            continue
-
-        if text.lower() == "/mode":
-            engine.toggle_mode()
-            continue
-
-        if text.lower() == "/model":
-            print(f"  {C.CYAN}Model: {engine.model}{C.RESET}")
-            continue
-
-        if text.lower() == "/status":
-            import subprocess
-            try:
-                r = subprocess.run(
-                    ["git", "status", "--short"],
-                    cwd=engine.project_root,
-                    capture_output=True, text=True, timeout=5)
-                print(r.stdout if r.stdout else "  Clean working tree")
-            except Exception as e:
-                print(f"  {C.RED}{e}{C.RESET}")
-            continue
-
-        if text.lower().startswith("/export"):
-            parts = text.split(maxsplit=1)
-            path = parts[1] if len(parts) > 1 else "conversation_export.md"
-            engine.export(path)
+        # Handle slash commands
+        if text.startswith("/"):
+            result = _handle_slash(text, engine)
+            if result == "EXIT":
+                break
+            if result:
+                continue
+            # Unrecognized slash command
+            print(f"  {C.RED}Unknown command: {text.split()[0]}. Type /help{C.RESET}")
             continue
 
         engine.chat(text)

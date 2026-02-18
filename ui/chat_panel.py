@@ -550,190 +550,137 @@ class ChatPanel(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
-        
-        # 1. Toolbar (Clear Context)
-        self.top_bar = QFrame()
-        self.top_bar.setStyleSheet("background: #18181b; border-bottom: 1px solid #27272a;")
-        self.top_bar_layout = QHBoxLayout(self.top_bar)
-        self.top_bar_layout.setContentsMargins(10, 5, 10, 5)
-        
-        self.clear_btn = QPushButton("Clear Context")
-        self.clear_btn.clicked.connect(self.clear_context)
-        # Fix: ensure stop logic is wired
-        self.ai_thread = None 
-        self.clear_btn.setStyleSheet("""
-            QPushButton {
-                background: #27272a; color: #a1a1aa; border: 1px solid #3f3f46; 
-                padding: 4px 12px; border-radius: 4px; font-size: 11px;
-                font-family: 'Consolas', monospace;
-            }
-            QPushButton:hover { 
-                background: #3f3f46; 
-                color: #ff9900; /* Neon Orange hover */
-                border-color: #ff9900;
-            }
-        """)
-        self.top_bar_layout.addWidget(self.clear_btn)
-        
-        self.top_bar_layout.addStretch()
-        
-        # Model Selector
-        self.model_combo = QComboBox()
-        self.model_combo.setFixedWidth(200)
-        self.model_combo.setStyleSheet("""
-            QComboBox {
-                background: #27272a; color: #00f3ff; border: 1px solid #3f3f46; 
-                padding: 4px 12px; border-radius: 4px;
-                font-family: 'Consolas', monospace; font-size: 11px;
-            }
-            QComboBox:hover { border-color: #00f3ff; }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: #18181b;
-                color: #e4e4e7;
-                selection-background-color: #27272a;
-                selection-color: #00f3ff;
-                border: 1px solid #3f3f46;
-                outline: none;
-            }
-            QComboBox::down-arrow { image: none; border: none; } 
-        """)
-        self.model_combo.currentTextChanged.connect(self.on_model_changed)
-        self.top_bar_layout.addWidget(self.model_combo)
 
-        # Mode Selector (Command & Control)
-        self.mode_combo = QComboBox()
-        self.mode_combo.setFixedWidth(180)
-        self.mode_combo.setStyleSheet("""
-            QComboBox {
-                background: #27272a; color: #ff9900; border: 1px solid #3f3f46; 
-                padding: 4px 12px; border-radius: 4px;
-                font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;
-            }
-            QComboBox:hover { border-color: #ff9900; }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: #18181b;
-                color: #e4e4e7;
-                selection-background-color: #27272a;
-                selection-color: #ff9900;
-                border: 1px solid #3f3f46;
-                outline: none;
-            }
-        """)
-        self.mode_combo.addItems(["🛑 Phased (Default)", "🔥 Siege Mode"])
-        self.top_bar_layout.addWidget(self.mode_combo)
-
-        # self.settings_btn = QPushButton("⚙️") ...
-        
-        self.layout.addWidget(self.top_bar)
-        
-        # Refresh models init
-        self.refresh_models()
-
-        # 2. Chat Area (Scroll) - THE LAYERED STACK
-        # Layer 1 & 2: Container with Background
+        # ── Chat Area ──
         bg_path = get_resource_path(os.path.join("resources", "Chat_Background_Image.png"))
         self.chat_container = WatermarkContainer(logo_path=bg_path)
-        
-        # Layer 3: The Scroll Area (Transparent)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setAttribute(Qt.WA_TranslucentBackground)
         self.scroll_area.setStyleSheet("background: transparent; border: none;")
         self.scroll_area.viewport().setStyleSheet("background: transparent; border: none;")
-        
-        # Content Widget (Transparent)
+
         self.chat_content = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_content)
-        self.chat_layout.setAlignment(Qt.AlignTop) 
-        self.chat_layout.setContentsMargins(10, 10, 10, 10)
+        self.chat_layout.setAlignment(Qt.AlignTop)
+        self.chat_layout.setContentsMargins(16, 12, 16, 12)
         self.chat_layout.setSpacing(10)
         self.chat_content.setStyleSheet("background: transparent; border: none;")
         self.chat_content.setAttribute(Qt.WA_TranslucentBackground)
-        
-        self.scroll_area.setWidget(self.chat_content)
 
-        # Reliable auto-scroll: fires AFTER the layout recalculates sizes
+        self.scroll_area.setWidget(self.chat_content)
         self.scroll_area.verticalScrollBar().rangeChanged.connect(
             self._on_scroll_range_changed)
         self.scroll_area.verticalScrollBar().valueChanged.connect(
             self._on_user_scroll)
-        
-        # Add ScrollArea to the Background Container
+
         self.chat_container.layout.addWidget(self.scroll_area)
-        
-        # Add the entire wrapped container to main layout
         self.layout.addWidget(self.chat_container, 1)
-        
-        # 3. Input Area
+
+        # ── Input Area (compact bottom bar) ──
         self.input_wrapper = QWidget()
-        self.input_wrapper.setStyleSheet("background: #18181b; border-top: 1px solid #27272a;")
+        self.input_wrapper.setStyleSheet("background: #111113; border-top: 1px solid #1e1e21;")
         self.input_wrapper_layout = QVBoxLayout(self.input_wrapper)
-        self.input_wrapper_layout.setContentsMargins(10, 10, 10, 10)
-        self.input_wrapper_layout.setSpacing(0)
-        
-        # Attachment Preview Area
+        self.input_wrapper_layout.setContentsMargins(10, 4, 10, 6)
+        self.input_wrapper_layout.setSpacing(3)
+
+        # Attachment preview row
         self.attachment_area = QFrame()
         self.attachment_area.setVisible(False)
-        self.attachment_area.setStyleSheet("background: #18181b; border: none; padding-bottom: 5px;")
+        self.attachment_area.setStyleSheet("background: transparent; border: none;")
         self.attachment_layout = QHBoxLayout(self.attachment_area)
         self.attachment_layout.setAlignment(Qt.AlignLeft)
         self.attachment_layout.setContentsMargins(0, 0, 0, 0)
         self.input_wrapper_layout.addWidget(self.attachment_area)
 
+        # Main input frame (rounded card)
         self.input_container = QFrame()
-        self.input_container.setStyleSheet("""
-            QFrame {
-                background: #27272a; border: 1px solid #3f3f46; border-radius: 6px;
-            }
-        """)
-        self.input_layout = QHBoxLayout(self.input_container)
-        self.input_layout.setContentsMargins(5, 5, 5, 5)
-        
-        # Attachment Button
-        self.attach_btn = QPushButton("📎")
-        self.attach_btn.setFixedWidth(30)
-        self.attach_btn.setStyleSheet("""
-            QPushButton { background: transparent; color: #a1a1aa; border: none; font-size: 16px; }
-            QPushButton:hover { color: #e4e4e7; }
-        """)
-        self.attach_btn.clicked.connect(self.select_attachment)
-        self.input_layout.addWidget(self.attach_btn)
+        self.input_container.setStyleSheet(
+            "QFrame { background: #1a1a1d; border: 1px solid #27272a; border-radius: 10px; }")
+        input_outer = QVBoxLayout(self.input_container)
+        input_outer.setContentsMargins(0, 0, 0, 0)
+        input_outer.setSpacing(0)
 
+        # Text input (compact)
         self.input_field = QTextEdit()
-        self.input_field.setPlaceholderText("Type a message... (@file to attach context, Enter to send)")
-        self.input_field.setStyleSheet("""
-            QTextEdit {
-                background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; 
-                border-radius: 6px; padding: 10px; font-size: 13px;
-                font-family: 'Consolas', monospace;
-            }
-            QTextEdit:focus { border-color: #ff9900; }
-        """)
-        self.input_field.setFixedHeight(50)
-        self.input_layout.addWidget(self.input_field)
-        
-        self.send_btn = QPushButton("Send")
+        self.input_field.setPlaceholderText("Message VoxAI...  (@file for context)")
+        self.input_field.setStyleSheet(
+            "QTextEdit { background: transparent; color: #e4e4e7; border: none; "
+            "padding: 8px 12px 2px 12px; font-size: 13px; "
+            "font-family: 'Consolas', 'Courier New', monospace; }"
+        )
+        self.input_field.setMinimumHeight(28)
+        self.input_field.setMaximumHeight(100)
+        input_outer.addWidget(self.input_field)
+
+        # Bottom row inside the card: pills + buttons
+        pill_row = QHBoxLayout()
+        pill_row.setContentsMargins(6, 0, 6, 5)
+        pill_row.setSpacing(4)
+
+        # Attach button
+        self.attach_btn = QPushButton("+")
+        self.attach_btn.setToolTip("Attach file")
+        self.attach_btn.setFixedSize(22, 22)
+        self.attach_btn.setStyleSheet(
+            "QPushButton { background: #27272a; color: #71717a; border: 1px solid #3f3f46; "
+            "border-radius: 11px; font-size: 14px; font-weight: bold; }"
+            "QPushButton:hover { color: #00f3ff; border-color: #00f3ff; }")
+        self.attach_btn.clicked.connect(self.select_attachment)
+        pill_row.addWidget(self.attach_btn)
+
+        # Mode pill
+        self.mode_combo = QComboBox()
+        self.mode_combo.setFixedHeight(22)
+        self.mode_combo.addItems(["Phased", "Siege"])
+        self.mode_combo.setStyleSheet(
+            "QComboBox { background: #27272a; color: #ff9900; border: 1px solid #3f3f46; "
+            "border-radius: 8px; padding: 1px 8px; font-size: 10px; "
+            "font-family: 'Consolas', monospace; font-weight: bold; }"
+            "QComboBox:hover { border-color: #ff9900; }"
+            "QComboBox::drop-down { border: none; width: 0px; }"
+            "QComboBox QAbstractItemView { background: #18181b; color: #e4e4e7; "
+            "selection-background-color: #27272a; selection-color: #ff9900; "
+            "border: 1px solid #3f3f46; }")
+        pill_row.addWidget(self.mode_combo)
+
+        # Model pill
+        self.model_combo = QComboBox()
+        self.model_combo.setFixedHeight(22)
+        self.model_combo.setMaximumWidth(180)
+        self.model_combo.setStyleSheet(
+            "QComboBox { background: #27272a; color: #00f3ff; border: 1px solid #3f3f46; "
+            "border-radius: 8px; padding: 1px 8px; font-size: 10px; "
+            "font-family: 'Consolas', monospace; }"
+            "QComboBox:hover { border-color: #00f3ff; }"
+            "QComboBox::drop-down { border: none; width: 0px; }"
+            "QComboBox QAbstractItemView { background: #18181b; color: #e4e4e7; "
+            "selection-background-color: #27272a; selection-color: #00f3ff; "
+            "border: 1px solid #3f3f46; }")
+        self.model_combo.currentTextChanged.connect(self.on_model_changed)
+        pill_row.addWidget(self.model_combo)
+
+        pill_row.addStretch()
+
+        # Send / Stop button
+        self.send_btn = QPushButton("↑")
+        self.send_btn.setToolTip("Send message (Enter)")
+        self.send_btn.setFixedSize(28, 22)
         self.send_btn.clicked.connect(self.send_message)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: #00f3ff; 
-                color: #18181b;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                padding: 8px 16px;
-                font-family: 'Consolas', monospace;
-            }
-            QPushButton:hover { background: #33f7ff; }
-            QPushButton:pressed { background: #00c2cc; }
-            QPushButton:disabled { background: #3f3f46; color: #71717a; }
-        """)
-        self.input_layout.addWidget(self.send_btn)
-        
+        self.send_btn.setStyleSheet(
+            "QPushButton { background: #00f3ff; color: #111113; border: none; "
+            "border-radius: 11px; font-weight: bold; font-size: 14px; }"
+            "QPushButton:hover { background: #33f7ff; }"
+            "QPushButton:pressed { background: #00c2cc; }"
+            "QPushButton:disabled { background: #3f3f46; color: #71717a; }")
+        pill_row.addWidget(self.send_btn)
+
+        input_outer.addLayout(pill_row)
         self.input_wrapper_layout.addWidget(self.input_container)
         self.layout.addWidget(self.input_wrapper)
+
+        self.refresh_models()
         
         # Re-install event filter on logic init
         self.input_field.installEventFilter(self)
@@ -765,10 +712,25 @@ class ChatPanel(QWidget):
         # Trigger auto-indexing in background
         QTimer.singleShot(1000, self.start_auto_indexing)
 
+    @staticmethod
+    def _short_model_name(full: str) -> str:
+        """Turn '[OpenRouter] anthropic/claude-opus-4-20250514' into 'claude-opus-4'."""
+        name = full
+        # Strip provider prefix like "[OpenRouter] " or "[Anthropic] "
+        if "]" in name:
+            name = name.split("]", 1)[1].strip()
+        # Strip org prefix like "anthropic/" or "openai/"
+        if "/" in name:
+            name = name.rsplit("/", 1)[1]
+        # Strip date suffixes like -20250514
+        import re as _re
+        name = _re.sub(r'-\d{8,}$', '', name)
+        return name
+
     def refresh_models(self):
-        current = (self.model_combo.currentText().strip() if self.model_combo.count() else "")
-        if not current:
-            current = (self.settings_manager.get_selected_model() or "").strip()
+        current_full = self._get_full_model_name()
+        if not current_full:
+            current_full = (self.settings_manager.get_selected_model() or "").strip()
 
         models = self.settings_manager.get_enabled_models() or []
         models = [m for m in models if isinstance(m, str) and m.strip()]
@@ -779,16 +741,25 @@ class ChatPanel(QWidget):
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         for m in models:
-            self.model_combo.addItem(m)
+            self.model_combo.addItem(self._short_model_name(m), m)
         self.model_combo.blockSignals(False)
 
-        idx = self.model_combo.findText(current)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
+        # Restore selection by matching full name stored in item data
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == current_full:
+                self.model_combo.setCurrentIndex(i)
+                break
         else:
             if self.model_combo.count() > 0:
                 self.model_combo.setCurrentIndex(0)
-                self.settings_manager.set_selected_model(self.model_combo.currentText())
+                self.settings_manager.set_selected_model(
+                    self.model_combo.currentData() or self.model_combo.currentText())
+
+    def _get_full_model_name(self) -> str:
+        """Return the full model identifier from item data, falling back to display text."""
+        if self.model_combo.count() == 0:
+            return ""
+        return (self.model_combo.currentData() or self.model_combo.currentText() or "").strip()
 
     def refresh_appearance(self):
         """Reloads settings and updates all chat items."""
@@ -803,10 +774,11 @@ class ChatPanel(QWidget):
         # Force redraw
         self.chat_content.update()
 
-    def on_model_changed(self, text):
-        if text and text.strip():
-            self.settings_manager.set_selected_model(text.strip())
-            log.info(f"Model switched to: {text.strip()}")
+    def on_model_changed(self, _display_text):
+        full = self._get_full_model_name()
+        if full:
+            self.settings_manager.set_selected_model(full)
+            log.info(f"Model switched to: {full}")
 
     def open_settings(self):
         from ui.settings_dialog import SettingsDialog
@@ -889,11 +861,7 @@ class ChatPanel(QWidget):
                     self.messages.pop()
                 self.is_processing = True
                 self.tool_loop_count = 0
-                self.send_btn.setText("Stop")
-                self.send_btn.setStyleSheet(
-                    "background: #ff9900; color: #18181b; border: none; "
-                    "border-radius: 4px; font-weight: bold; padding: 8px 16px; "
-                    "font-family: 'Consolas', monospace;")
+                self._set_stop_button()
                 self._start_ai_worker(m["content"], [])
                 break
 
@@ -1101,20 +1069,7 @@ class ChatPanel(QWidget):
         self.tool_loop_count = 0
         self.input_field.clear()
         
-        # Update button to STOP state (Neon Orange)
-        self.send_btn.setText("Stop")
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: #ff9900; 
-                color: #18181b;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                padding: 8px 16px;
-                font-family: 'Consolas', monospace;
-            }
-            QPushButton:hover { background: #ffaa33; }
-        """)
+        self._set_stop_button()
         
         # 1. Add User Message to UI
         disp_text = text
@@ -1145,7 +1100,7 @@ class ChatPanel(QWidget):
         if attachments is None: attachments = []
         
         # Select System Prompt based on Model Type
-        is_local = "Local" in self.model_combo.currentText()
+        is_local = "Local" in self._get_full_model_name()
         
         if is_local:
             base_prompt = SystemPrompts.CODING_AGENT_LITE
@@ -1161,7 +1116,7 @@ class ChatPanel(QWidget):
         # SKIP complicated mode prompts for Local/Small models to prevent confusion
         current_mode = self.mode_combo.currentText()
         if not is_local:
-            if "Siege Mode" in current_mode:
+            if "Siege" in current_mode:
                 siege_prompt = (
                     "COMMAND & CONTROL: MODE 2 (SIEGE MODE / FULL AUTO)\n"
                     "AUTHORIZATION GRANTED: \"GO LIMITLESS\"\n"
@@ -1314,7 +1269,7 @@ class ChatPanel(QWidget):
         self.current_ai_response = ""
         
         self.ai_thread_obj = QThread()
-        self.ai_worker_obj = AIWorker(history_to_send, self.model_combo.currentText())
+        self.ai_worker_obj = AIWorker(history_to_send, self._get_full_model_name())
         self.ai_worker_obj.moveToThread(self.ai_thread_obj)
         
         self.ai_thread_obj.started.connect(self.ai_worker_obj.run)
@@ -1345,8 +1300,7 @@ class ChatPanel(QWidget):
         self.messages.append({"role": role, "content": text})
         try: self.rag_client.ingest_message(role, text, self.conversation_id)
         except Exception: pass
-        self.send_btn.setText("Stop")
-        self.send_btn.setStyleSheet("background: #ff9900; color: #18181b; border: none; border-radius: 4px; font-weight: bold; padding: 8px 16px; font-family: 'Consolas', monospace;")
+        self._set_stop_button()
         self._start_ai_worker(text, [])
 
 
@@ -1376,25 +1330,25 @@ class ChatPanel(QWidget):
         if not stopped:
             self._reset_send_button()
 
+    def _set_stop_button(self):
+        """Switch to the Stop state (orange square)."""
+        self.send_btn.setText("■")
+        self.send_btn.setStyleSheet(
+            "QPushButton { background: #ff9900; color: #111113; border: none; "
+            "border-radius: 11px; font-weight: bold; font-size: 12px; }"
+            "QPushButton:hover { background: #ffaa33; }")
+
     def _reset_send_button(self):
-        """Resets the button to the Send state (Neon Blue)."""
+        """Resets the button to the Send state."""
         self.is_processing = False
-        self.send_btn.setText("Send")
+        self.send_btn.setText("↑")
         self.send_btn.setEnabled(True)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: #00f3ff; 
-                color: #18181b;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                padding: 8px 16px;
-                font-family: 'Consolas', monospace;
-            }
-            QPushButton:hover { background: #33f7ff; }
-            QPushButton:pressed { background: #00c2cc; }
-            QPushButton:disabled { background: #3f3f46; color: #71717a; }
-        """)
+        self.send_btn.setStyleSheet(
+            "QPushButton { background: #00f3ff; color: #111113; border: none; "
+            "border-radius: 11px; font-weight: bold; font-size: 14px; }"
+            "QPushButton:hover { background: #33f7ff; }"
+            "QPushButton:pressed { background: #00c2cc; }"
+            "QPushButton:disabled { background: #3f3f46; color: #71717a; }")
     def eventFilter(self, obj, event):
         if obj == self.input_field and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -1449,7 +1403,7 @@ class ChatPanel(QWidget):
         tools = CodeParser.parse_tool_calls(self.current_ai_response)
         if tools:
             current_mode = self.mode_combo.currentText()
-            is_siege = "Siege Mode" in current_mode
+            is_siege = "Siege" in current_mode
             max_loops = 25 if is_siege else 3
             loop_count = getattr(self, 'tool_loop_count', 0)
 
@@ -1484,7 +1438,7 @@ class ChatPanel(QWidget):
         self.progress_item.set_thought(f"Running: {summary}")
         self._auto_scroll = True
         
-        is_siege = "Siege Mode" in self.mode_combo.currentText()
+        is_siege = "Siege" in self.mode_combo.currentText()
         auto_approve = is_siege or self.settings_manager.get_auto_approve_writes()
         self.tool_thread = QThread()
         self.tool_worker = ToolWorker(tools, auto_approve=auto_approve)
