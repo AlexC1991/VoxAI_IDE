@@ -16,7 +16,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge)
 ![Build](https://img.shields.io/github/actions/workflow/status/AlexC1991/VoxAI_IDE/build.yml?style=for-the-badge&label=Build)
 
-**VoxAI IDE** is a local-first autonomous coding agent — built to compete with Cursor and Claude Code. Purpose-built for developers who direct high-level intent and let a specialized AI handle implementation, debugging, and execution end-to-end.
+**VoxAI IDE** is a local-first autonomous coding agent — built to be an alternative to Cursor and Claude Code. Purpose-built for developers who direct high-level intent and let a specialized AI handle implementation, debugging, and execution end-to-end.
 
 > Download the latest Windows release from the [Releases](https://github.com/AlexC1991/VoxAI_IDE/releases) page — no Python install required.
 
