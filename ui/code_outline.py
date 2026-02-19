@@ -52,6 +52,7 @@ class CodeOutline(QWidget):
         """Rebuild the outline tree for the given file content."""
         self.tree.clear()
         if not file_path or not text:
+            self._add_item(None, "·", "No file selected", 0)
             return
 
         _, ext = os.path.splitext(file_path)
@@ -67,6 +68,8 @@ class CodeOutline(QWidget):
             self._parse_generic(text)
 
         self.tree.expandAll()
+        if self.tree.topLevelItemCount() == 0:
+            self._add_item(None, "·", "No symbols found", 0)
 
     def _add_item(self, parent, icon: str, name: str, line: int):
         item = QTreeWidgetItem(parent if parent else self.tree)
@@ -87,10 +90,10 @@ class CodeOutline(QWidget):
                 cls_item = self._add_item(None, "C", node.name, node.lineno)
                 cls_item.setForeground(0, QColor("#e5c07b"))
                 for child in ast.iter_child_nodes(node):
-                    if isinstance(child, ast.FunctionDef):
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         m = self._add_item(cls_item, "M", child.name, child.lineno)
                         m.setForeground(0, QColor("#61afef"))
-            elif isinstance(node, ast.FunctionDef):
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 f = self._add_item(None, "F", node.name, node.lineno)
                 f.setForeground(0, QColor("#98c379"))
 

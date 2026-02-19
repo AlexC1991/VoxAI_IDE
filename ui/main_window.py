@@ -138,6 +138,8 @@ class CodingAgentIDE(QMainWindow):
         self.editor_panel = EditorPanel()
         self.editor_panel.run_requested.connect(self.run_script)
         self.editor_panel.tabs.currentChanged.connect(self._on_editor_tab_changed)
+        self.editor_panel.ai_edit_requested.connect(self._handle_ai_edit_requested)
+        self._outline_editor_connected = None
 
         # Give the chat panel access to the active editor context
         self.chat_panel._editor_context_getter = self.editor_panel.get_active_context
@@ -426,6 +428,19 @@ class CodingAgentIDE(QMainWindow):
             self._refresh_outline()
 
     def _on_editor_tab_changed(self, index):
+        editor = self.editor_panel.tabs.widget(index) if index >= 0 else None
+        if self._outline_editor_connected and self._outline_editor_connected is not editor:
+            try:
+                self._outline_editor_connected.textChanged.disconnect(self._refresh_outline)
+            except Exception:
+                pass
+            self._outline_editor_connected = None
+        if editor and hasattr(editor, "textChanged"):
+            try:
+                editor.textChanged.connect(self._refresh_outline)
+                self._outline_editor_connected = editor
+            except Exception:
+                pass
         if self.code_outline.isVisible():
             self._refresh_outline()
 
@@ -580,9 +595,11 @@ class CodingAgentIDE(QMainWindow):
         self.showNormal()
         self.activateWindow()
         self.raise_()
+        # Terminal mode may have changed model/settings; sync combo selection first.
+        self.chat_panel.refresh_models()
+        # Ensure any stale run-state from before terminal mode is cleared.
+        self.chat_panel._reset_send_button()
         # Reload conversation written by the terminal session.
-        # Clear first to avoid duplicating messages already in the UI.
-        self.chat_panel.clear_context()
         self.chat_panel.load_conversation()
         log.info("Terminal mode exited — GUI restored")
 
@@ -669,8 +686,13 @@ class CodingAgentIDE(QMainWindow):
     # AI callbacks
     # ------------------------------------------------------------------
     def on_file_updated(self, file_path):
-        self.editor_panel.load_file(file_path)
+        # Preserve baseline when file is already open so change highlights remain visible.
+        if not self.editor_panel.reload_open_file(file_path, highlight=True):
+            self.editor_panel.load_file(file_path)
+        self._ensure_editor_visible_for_diff()
         self.tree_panel.refresh()
+        if self.code_outline.isVisible():
+            self._refresh_outline()
 
     def on_diff_generated(self, file_path, diff_text):
         if not hasattr(self, '_pending_diffs'):
@@ -689,10 +711,27 @@ class CodingAgentIDE(QMainWindow):
         if not diffs:
             return
         if len(diffs) == 1:
-            self.editor_panel.show_diff(*diffs[0])
+            self.editor_panel.show_diff(*diffs[0], activate=False)
         else:
-            self.editor_panel.show_diffs_batch(diffs)
+            self.editor_panel.show_diffs_batch(diffs, activate=False)
+        self._ensure_editor_visible_for_diff()
         self._pending_diffs = []
+
+    def _handle_ai_edit_requested(self, file_path: str, selection: str, instruction: str):
+        if self.chat_panel.is_processing:
+            self._show_notification("AI Busy", "Please wait for the current response to finish.")
+            return
+        prompt = (
+            "You are editing a selected code snippet in the user's file.\n"
+            f"File: {file_path}\n"
+            f"Instruction: {instruction}\n\n"
+            "Use the edit_file tool with old_text matching the selection exactly.\n"
+            "Only change text inside the selection. Preserve formatting and indentation.\n\n"
+            "[BEGIN_SELECTION]\n"
+            f"{selection}\n"
+            "[END_SELECTION]"
+        )
+        self.chat_panel.send_worker(prompt, is_automated=True)
 
     def on_code_generated(self, language, code):
         self.debug_drawer.append_output(
@@ -797,6 +836,26 @@ class CodingAgentIDE(QMainWindow):
                 sizes[2] = int(total * 0.4)
                 sizes[1] = total - sizes[0] - sizes[2]
                 self.main_splitter.setSizes(sizes)
+
+    def _ensure_editor_visible_for_diff(self):
+        """Ensure the editor pane is visible when a diff is generated."""
+        if not self.editor_panel.isVisible():
+            self.editor_panel.setVisible(True)
+            if hasattr(self, "_ib_editor"):
+                self._ib_editor.setChecked(True)
+        self._ensure_right_panel_visible(True)
+
+        sizes = self.right_splitter.sizes()
+        if sizes and sizes[0] < 200:
+            total = sum(sizes)
+            sizes[0] = int(total * 0.6)
+            remaining = total - sizes[0]
+            if len(sizes) == 2:
+                sizes[1] = remaining
+            elif len(sizes) >= 3:
+                sizes[1] = int(remaining * 0.4)
+                sizes[2] = remaining - sizes[1]
+            self.right_splitter.setSizes(sizes)
 
     def open_settings(self):
         from ui.settings_dialog import SettingsDialog

@@ -1,15 +1,17 @@
 import os
 import logging
+import ast
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit,
     QLabel, QPushButton, QTextEdit, QLineEdit, QCheckBox,
+    QMessageBox, QFrame,
 )
 from PySide6.QtGui import (
     QFont, QSyntaxHighlighter, QTextCharFormat, QColor, QTextFormat,
     QPainter, QTextCursor, QKeySequence, QShortcut,
 )
 from PySide6.QtCore import (
-    Qt, QRegularExpression, Signal, QRect, QSize, QFileSystemWatcher, QTimer,
+    Qt, QRegularExpression, Signal, QRect, QSize, QFileSystemWatcher, QTimer, QPoint,
 )
 
 log = logging.getLogger(__name__)
@@ -144,6 +146,18 @@ _BRACKET_CLOSE = {v: k for k, v in _BRACKET_PAIRS.items()}
 class CodeEditor(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Initialize selection state before connecting cursor signals.
+        # Qt can emit cursorPositionChanged during widget setup.
+        self._baseline_lines: list[str] = []
+        self._cursor_selections: list = []
+        self._change_selections: list = []
+        self._diagnostic_selections: list = []
+        self._diagnostic_lines: set[int] = set()
+        self._diagnostic_messages: list[str] = []
+        self._ghost_text = ""
+        self._ghost_anchor_pos = -1
+        self._ghost_paused = False
+
         self.line_number_area = LineNumberArea(self)
 
         self.blockCountChanged.connect(self.update_line_number_area_width)
@@ -151,7 +165,6 @@ class CodeEditor(QPlainTextEdit):
         self.cursorPositionChanged.connect(self._on_cursor_moved)
 
         self.update_line_number_area_width(0)
-        self._on_cursor_moved()
 
         self.setStyleSheet("""
             QPlainTextEdit {
@@ -163,14 +176,35 @@ class CodeEditor(QPlainTextEdit):
         self.highlighter = None
         self.file_path = None
         self._baseline_lines: list[str] = []
+        self._cursor_selections: list = []
         self._change_selections: list = []
+        self._diagnostic_selections: list = []
+        self._diagnostic_lines: set[int] = set()
+        self._diagnostic_messages: list[str] = []
+        self._ghost_text = ""
+        self._ghost_anchor_pos = -1
+        self._ghost_paused = False
+
+        self._diag_timer = QTimer(self)
+        self._diag_timer.setSingleShot(True)
+        self._diag_timer.setInterval(350)
+        self._diag_timer.timeout.connect(self._run_python_diagnostics)
+
+        self._ghost_timer = QTimer(self)
+        self._ghost_timer.setSingleShot(True)
+        self._ghost_timer.setInterval(220)
+        self._ghost_timer.timeout.connect(self._refresh_ghost_text)
+        self.textChanged.connect(self._on_text_changed)
+
+        self._ai_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._ai_shortcut.activated.connect(self._request_ai_edit)
+        self._on_cursor_moved()
 
     def set_baseline(self, text: str):
         """Snapshot the current content as the baseline for change highlighting."""
         self._baseline_lines = text.splitlines()
         self._change_selections.clear()
-        self.setExtraSelections([s for s in self.extraSelections()
-                                 if s not in self._change_selections])
+        self._apply_extra_selections()
 
     def highlight_changes(self):
         """Compare current text to baseline and highlight added/changed lines."""
@@ -197,9 +231,138 @@ class CodeEditor(QPlainTextEdit):
                 change_sels.append(sel)
 
         self._change_selections = change_sels
-        # Merge with existing extra selections (like bracket matching)
-        existing = [s for s in self.extraSelections() if s not in self._change_selections]
-        self.setExtraSelections(existing + change_sels)
+        self._apply_extra_selections()
+
+    def _apply_extra_selections(self):
+        self.setExtraSelections(
+            list(getattr(self, "_cursor_selections", []))
+            + list(getattr(self, "_change_selections", []))
+            + list(getattr(self, "_diagnostic_selections", []))
+        )
+
+    def _on_text_changed(self):
+        self._diag_timer.start()
+        if self._ghost_paused:
+            self._ghost_paused = False
+            return
+        self._ghost_timer.start()
+
+    def _clear_ghost_text(self):
+        if self._ghost_text:
+            self._ghost_text = ""
+            self._ghost_anchor_pos = -1
+            self.viewport().update()
+
+    def _refresh_ghost_text(self):
+        if self.isReadOnly():
+            self._clear_ghost_text()
+            return
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._clear_ghost_text()
+            return
+        block = cursor.block()
+        line_text = block.text()
+        col = cursor.positionInBlock()
+        prefix = line_text[:col]
+        if not prefix.strip():
+            self._clear_ghost_text()
+            return
+
+        best_suffix = ""
+        for line in self.toPlainText().splitlines():
+            if line.startswith(prefix) and len(line) > len(prefix):
+                suffix = line[len(prefix):]
+                if 0 < len(suffix) <= 120 and (not best_suffix or len(suffix) < len(best_suffix)):
+                    best_suffix = suffix
+
+        if not best_suffix:
+            stripped = prefix.rstrip()
+            if stripped.endswith(":"):
+                best_suffix = "\n    "
+            elif stripped.endswith("("):
+                best_suffix = ")"
+            elif stripped.endswith("["):
+                best_suffix = "]"
+            elif stripped.endswith("{"):
+                best_suffix = "}"
+
+        self._ghost_text = best_suffix
+        self._ghost_anchor_pos = cursor.position() if best_suffix else -1
+        self.viewport().update()
+
+    def _run_python_diagnostics(self):
+        self._diagnostic_selections = []
+        self._diagnostic_lines = set()
+        self._diagnostic_messages = []
+
+        if not (self.file_path and self.file_path.endswith(".py")):
+            self._apply_extra_selections()
+            return
+
+        try:
+            ast.parse(self.toPlainText())
+        except SyntaxError as e:
+            line = e.lineno or 1
+            msg = e.msg or "Syntax error"
+            self._diagnostic_lines.add(line)
+            self._diagnostic_messages.append(f"Ln {line}: {msg}")
+            block = self.document().findBlockByNumber(max(0, line - 1))
+            if block.isValid():
+                sel = QTextEdit.ExtraSelection()
+                sel_cursor = QTextCursor(block)
+                sel_cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+                sel.cursor = sel_cursor
+                sel.format.setUnderlineStyle(QTextCharFormat.WaveUnderline)
+                sel.format.setUnderlineColor(QColor("#f14c4c"))
+                sel.format.setForeground(QColor("#fca5a5"))
+                self._diagnostic_selections.append(sel)
+
+        self.setToolTip("\n".join(self._diagnostic_messages))
+        self._apply_extra_selections()
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
+        can_edit = self.textCursor().hasSelection() and bool(self.file_path)
+        act = menu.addAction("Edit with AI\u2026")
+        act.setEnabled(can_edit)
+        act.triggered.connect(self._request_ai_edit)
+        pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+        menu.exec(pos)
+
+    def _request_ai_edit(self):
+        if hasattr(self, "request_ai_edit") and callable(self.request_ai_edit):
+            self.request_ai_edit()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Tab and self._ghost_text and self.textCursor().position() == self._ghost_anchor_pos:
+            self._ghost_paused = True
+            self.insertPlainText(self._ghost_text)
+            self._clear_ghost_text()
+            return
+        if event.key() == Qt.Key_Escape and self._ghost_text:
+            self._clear_ghost_text()
+            return
+        super().keyPressEvent(event)
+        if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown):
+            self._clear_ghost_text()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._ghost_text:
+            return
+        if self.textCursor().position() != self._ghost_anchor_pos:
+            return
+        first_line = self._ghost_text.split("\n", 1)[0]
+        if not first_line:
+            return
+        shown = first_line if len(first_line) <= 60 else (first_line[:57] + "...")
+        painter = QPainter(self.viewport())
+        painter.setPen(QColor("#5f6368"))
+        rect = self.cursorRect()
+        origin = rect.topLeft() + QPoint(2, self.fontMetrics().ascent() + 1)
+        painter.drawText(origin, shown)
 
     # --- Line numbers ---
     def line_number_area_width(self):
@@ -243,6 +406,10 @@ class CodeEditor(QPlainTextEdit):
                 painter.drawText(0, top, self.line_number_area.width(),
                                  self.fontMetrics().height(),
                                  Qt.AlignRight, str(num + 1))
+                if (num + 1) in self._diagnostic_lines:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor("#f14c4c"))
+                    painter.drawEllipse(2, top + 4, 5, 5)
             block = block.next()
             top = bottom
             bottom = top + int(self.blockBoundingRect(block).height())
@@ -261,7 +428,8 @@ class CodeEditor(QPlainTextEdit):
             extra.append(sel)
         # Bracket matching
         extra.extend(self._bracket_selections())
-        self.setExtraSelections(extra)
+        self._cursor_selections = extra
+        self._apply_extra_selections()
 
     def _bracket_selections(self) -> list:
         sels = []
@@ -494,6 +662,7 @@ class FindReplaceBar(QWidget):
 # ---------------------------------------------------------------------------
 class EditorPanel(QWidget):
     run_requested = Signal(str)
+    ai_edit_requested = Signal(str, str, str)  # file_path, selection, instruction
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -540,6 +709,45 @@ class EditorPanel(QWidget):
         self.find_bar = FindReplaceBar()
         self._layout.addWidget(self.find_bar)
 
+        # Inline AI edit bar (Ctrl+K / context menu)
+        self._ai_edit_file_path = ""
+        self._ai_edit_selection = ""
+        self.ai_edit_bar = QFrame()
+        self.ai_edit_bar.setStyleSheet(
+            "QFrame { background: #1f2937; border-top: 1px solid #334155; border-bottom: 1px solid #334155; }"
+        )
+        ai_lay = QHBoxLayout(self.ai_edit_bar)
+        ai_lay.setContentsMargins(8, 6, 8, 6)
+        ai_lay.setSpacing(6)
+        self.ai_edit_target = QLabel("AI Edit")
+        self.ai_edit_target.setStyleSheet(
+            "color: #93c5fd; font-size: 11px; font-family: 'Consolas', monospace;"
+        )
+        ai_lay.addWidget(self.ai_edit_target)
+        self.ai_edit_input = QLineEdit()
+        self.ai_edit_input.setPlaceholderText("Describe change for selected code...")
+        self.ai_edit_input.setStyleSheet(
+            "background: #111827; color: #e5e7eb; border: 1px solid #374151; border-radius: 4px; padding: 4px 8px;"
+        )
+        self.ai_edit_input.returnPressed.connect(self._submit_ai_edit_request)
+        ai_lay.addWidget(self.ai_edit_input, 1)
+        self.ai_edit_send = QPushButton("Send")
+        self.ai_edit_send.setStyleSheet(
+            "QPushButton { background: #0ea5e9; color: #0b1220; border: none; border-radius: 4px; padding: 4px 10px; font-weight: 600; }"
+            "QPushButton:hover { background: #38bdf8; }"
+        )
+        self.ai_edit_send.clicked.connect(self._submit_ai_edit_request)
+        ai_lay.addWidget(self.ai_edit_send)
+        self.ai_edit_cancel = QPushButton("Cancel")
+        self.ai_edit_cancel.setStyleSheet(
+            "QPushButton { background: transparent; color: #9ca3af; border: 1px solid #4b5563; border-radius: 4px; padding: 4px 10px; }"
+            "QPushButton:hover { color: #e5e7eb; border-color: #9ca3af; }"
+        )
+        self.ai_edit_cancel.clicked.connect(self._cancel_ai_edit_request)
+        ai_lay.addWidget(self.ai_edit_cancel)
+        self.ai_edit_bar.hide()
+        self._layout.addWidget(self.ai_edit_bar)
+
         # Keyboard shortcut: Ctrl+F
         self._find_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self._find_shortcut.activated.connect(self._toggle_find)
@@ -548,10 +756,15 @@ class EditorPanel(QWidget):
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_external_change)
         self._pending_reloads: set[str] = set()
+        self._file_snapshots: dict[str, str] = {}
         self._reload_timer = QTimer(self)
         self._reload_timer.setSingleShot(True)
         self._reload_timer.setInterval(300)
         self._reload_timer.timeout.connect(self._process_reloads)
+
+    @staticmethod
+    def _norm_path(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path or ""))
 
     # --- Find & Replace ---
     def _toggle_find(self):
@@ -562,6 +775,50 @@ class EditorPanel(QWidget):
                 self.find_bar.hide()
             else:
                 self.find_bar.activate()
+
+    def _request_ai_edit(self, editor: CodeEditor):
+        if not editor or not isinstance(editor, CodeEditor):
+            return
+        cursor = editor.textCursor()
+        if not cursor.hasSelection():
+            return
+        if not editor.file_path:
+            QMessageBox.information(
+                self,
+                "Edit with AI",
+                "Please save the file before using AI edit.",
+            )
+            return
+        selection = cursor.selectedText().replace("\u2029", "\n")
+        if not selection.strip():
+            return
+        self._ai_edit_file_path = editor.file_path
+        self._ai_edit_selection = selection
+        preview = selection.strip().splitlines()[0][:40]
+        self.ai_edit_target.setText(f"AI Edit: {os.path.basename(editor.file_path)} | \"{preview}\"")
+        self.ai_edit_input.clear()
+        self.ai_edit_bar.show()
+        self.ai_edit_input.setFocus()
+
+    def _submit_ai_edit_request(self):
+        instruction = self.ai_edit_input.text().strip()
+        if not instruction:
+            return
+        if not self._ai_edit_file_path or not self._ai_edit_selection:
+            self._cancel_ai_edit_request()
+            return
+        self.ai_edit_requested.emit(
+            self._ai_edit_file_path,
+            self._ai_edit_selection,
+            instruction,
+        )
+        self._cancel_ai_edit_request()
+
+    def _cancel_ai_edit_request(self):
+        self._ai_edit_file_path = ""
+        self._ai_edit_selection = ""
+        self.ai_edit_input.clear()
+        self.ai_edit_bar.hide()
 
     def _on_tab_changed(self, index):
         editor = self.tabs.widget(index)
@@ -585,22 +842,53 @@ class EditorPanel(QWidget):
         paths = list(self._pending_reloads)
         self._pending_reloads.clear()
         for path in paths:
+            norm_path = self._norm_path(path)
             for i in range(self.tabs.count()):
                 w = self.tabs.widget(i)
-                if getattr(w, 'file_path', None) == path:
+                w_path = getattr(w, 'file_path', None)
+                if self._norm_path(w_path) == norm_path:
                     try:
                         with open(path, 'r', encoding='utf-8') as f:
                             new_content = f.read()
                         if new_content != w.toPlainText():
                             cursor_pos = w.textCursor().position()
+                            old_snapshot = self._file_snapshots.get(norm_path, w.toPlainText())
                             w.setPlainText(new_content)
                             c = w.textCursor()
                             c.setPosition(min(cursor_pos, len(new_content)))
                             w.setTextCursor(c)
+                            w._baseline_lines = old_snapshot.splitlines()
                             w.highlight_changes()
+                            self._file_snapshots[norm_path] = new_content
                             log.info("Auto-reloaded %s (changes highlighted)", path)
                     except Exception as e:
                         log.debug("Reload failed for %s: %s", path, e)
+
+    def reload_open_file(self, path: str, highlight: bool = True) -> bool:
+        """Reload file contents for an open tab without resetting baseline."""
+        norm_path = self._norm_path(path)
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if self._norm_path(getattr(w, 'file_path', None)) == norm_path:
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        new_content = f.read()
+                    if new_content != w.toPlainText():
+                        cursor_pos = w.textCursor().position()
+                        old_snapshot = self._file_snapshots.get(norm_path, w.toPlainText())
+                        w.setPlainText(new_content)
+                        c = w.textCursor()
+                        c.setPosition(min(cursor_pos, len(new_content)))
+                        w.setTextCursor(c)
+                        if highlight:
+                            w._baseline_lines = old_snapshot.splitlines()
+                            w.highlight_changes()
+                        self._file_snapshots[norm_path] = new_content
+                    self.tabs.setCurrentIndex(i)
+                except Exception as e:
+                    log.error("Reload %s: %s", path, e)
+                return True
+        return False
 
     # --- Tab management ---
     def new_file(self, title="untitled.py", content=""):
@@ -612,19 +900,22 @@ class EditorPanel(QWidget):
             editor.highlighter = GenericHighlighter(editor.document())
         editor.setPlainText(content)
         editor.file_path = None
+        editor.request_ai_edit = lambda e=editor: self._request_ai_edit(e)
         self.tabs.addTab(editor, title)
         self.tabs.setCurrentWidget(editor)
         return editor
 
     def load_file(self, path):
+        norm_path = self._norm_path(path)
         for i in range(self.tabs.count()):
             w = self.tabs.widget(i)
-            if getattr(w, 'file_path', None) == path:
+            if self._norm_path(getattr(w, 'file_path', None)) == norm_path:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
                     w.setPlainText(content)
                     w.set_baseline(content)
+                    self._file_snapshots[norm_path] = content
                     self.tabs.setCurrentIndex(i)
                 except Exception as e:
                     log.error("Reload %s: %s", path, e)
@@ -638,8 +929,14 @@ class EditorPanel(QWidget):
             return
 
         editor = self.new_file(title=os.path.basename(path), content=content)
-        editor.file_path = path
-        editor.set_baseline(content)
+        editor.file_path = os.path.abspath(path)
+        old_snapshot = self._file_snapshots.get(norm_path)
+        if old_snapshot is not None and old_snapshot != content:
+            editor._baseline_lines = old_snapshot.splitlines()
+            editor.highlight_changes()
+        else:
+            editor.set_baseline(content)
+        self._file_snapshots[norm_path] = content
         self._watch(path)
 
     def close_tab(self, index):
@@ -702,7 +999,7 @@ class EditorPanel(QWidget):
         }
 
     # --- Diff viewing ---
-    def show_diff(self, file_path: str, diff_text: str):
+    def show_diff(self, file_path: str, diff_text: str, activate: bool = True):
         if not diff_text or not diff_text.strip():
             return
         tab_title = f"DIFF: {os.path.basename(file_path)}"
@@ -711,7 +1008,8 @@ class EditorPanel(QWidget):
                 editor = self.tabs.widget(i)
                 editor.setPlainText(diff_text)
                 self._apply_diff_highlights(editor, diff_text)
-                self.tabs.setCurrentIndex(i)
+                if activate:
+                    self.tabs.setCurrentIndex(i)
                 return
 
         editor = CodeEditor()
@@ -720,10 +1018,11 @@ class EditorPanel(QWidget):
         editor.setPlainText(diff_text)
         self._apply_diff_highlights(editor, diff_text)
         idx = self.tabs.addTab(editor, tab_title)
-        self.tabs.setCurrentIndex(idx)
+        if activate:
+            self.tabs.setCurrentIndex(idx)
         self.tabs.tabBar().setTabTextColor(idx, QColor("#ff9900"))
 
-    def show_diffs_batch(self, diffs: list):
+    def show_diffs_batch(self, diffs: list, activate: bool = True):
         last_idx = -1
         for file_path, diff_text in diffs:
             if not diff_text or not diff_text.strip():
@@ -746,7 +1045,7 @@ class EditorPanel(QWidget):
                 self._apply_diff_highlights(editor, diff_text)
                 last_idx = self.tabs.addTab(editor, tab_title)
                 self.tabs.tabBar().setTabTextColor(last_idx, QColor("#ff9900"))
-        if last_idx >= 0:
+        if activate and last_idx >= 0:
             self.tabs.setCurrentIndex(last_idx)
 
     def _apply_diff_highlights(self, editor, diff_text: str):

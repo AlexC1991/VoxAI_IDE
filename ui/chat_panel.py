@@ -8,7 +8,7 @@ import threading
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, 
     QTextEdit, QPushButton, QFrame, QLabel, QMessageBox,
-    QComboBox
+    QComboBox, QSizePolicy
 )
 from PySide6.QtCore import Signal, Qt, QThread, QObject, QTimer, QEvent
 from PySide6.QtGui import QPixmap, QPainter, QColor
@@ -536,6 +536,8 @@ class ChatPanel(QWidget):
     notification_requested = Signal(str, str) # title, message
     token_usage_updated = Signal(int) # total tokens for status bar
     conversation_changed = Signal()  # emitted when conversations are saved/switched
+    MAX_RENDERED_MESSAGES = 140
+    CHAT_MAX_WIDTH = 1080
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -557,6 +559,8 @@ class ChatPanel(QWidget):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setAttribute(Qt.WA_TranslucentBackground)
         self.scroll_area.setStyleSheet("background: transparent; border: none;")
         self.scroll_area.viewport().setStyleSheet("background: transparent; border: none;")
@@ -692,7 +696,15 @@ class ChatPanel(QWidget):
         self.messages = [] # List of {"role":Str, "content":Str}
         self.is_processing = False
         self._auto_scroll = True
+        self._programmatic_scroll = False
+        self._scroll_pending = False
         self._editor_context_getter = None  # set by main_window
+
+        # Streaming text buffer — batch updates to reduce layout thrashing
+        self._ai_text_dirty = False
+        self._ai_update_timer = QTimer()
+        self._ai_update_timer.setInterval(50)  # Refresh UI every 50ms max
+        self._ai_update_timer.timeout.connect(self._flush_ai_text)
         
         # Threads (use the same names throughout lifecycle)
         self.ai_thread_obj = None
@@ -701,6 +713,8 @@ class ChatPanel(QWidget):
         self.tool_worker = None
         self.current_ai_item = None
         self.progress_item = None
+        self._tool_calls_for_run = []
+        self._tool_action_log = []
 
         # Load system prompt
         from core.prompts import SystemPrompts
@@ -845,9 +859,46 @@ class ChatPanel(QWidget):
     def append_message_widget(self, role, text):
         item = MessageItem(role, text)
         item.regenerate_requested.connect(self._regenerate_last)
-        self.chat_layout.addWidget(item)
+        self._add_chat_widget(item)
         self._auto_scroll = True
         return item
+
+    def _add_chat_widget(self, widget, before_widget=None):
+        """Keep chat visually locked in a left-anchored, width-limited focus region."""
+        row = QWidget()
+        row.setStyleSheet("background: transparent; border: none;")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        # Left-anchored reading column (less centered, more natural chat flow).
+        widget.setMaximumWidth(self.CHAT_MAX_WIDTH)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        row_layout.addWidget(widget)
+        row_layout.addStretch(1)
+        widget._chat_row = row
+
+        if before_widget is not None and hasattr(before_widget, "_chat_row"):
+            idx = self.chat_layout.indexOf(before_widget._chat_row)
+            if idx >= 0:
+                self.chat_layout.insertWidget(idx, row)
+            else:
+                self.chat_layout.addWidget(row)
+        else:
+            self.chat_layout.addWidget(row)
+        self._prune_chat_widgets()
+
+    def _prune_chat_widgets(self):
+        """Limit rendered widgets to keep long conversations responsive."""
+        while self.chat_layout.count() > self.MAX_RENDERED_MESSAGES:
+            child = self.chat_layout.takeAt(0)
+            w = child.widget()
+            if w:
+                active_row = getattr(self.current_ai_item, "_chat_row", None)
+                if active_row is not None and w is active_row:
+                    # Should never happen with FIFO pruning, but be safe.
+                    self.chat_layout.insertWidget(0, w)
+                    break
+                w.deleteLater()
 
     def _regenerate_last(self):
         """Re-send the last user message to get a fresh AI response."""
@@ -871,12 +922,25 @@ class ChatPanel(QWidget):
         self.messages.append({"role": role, "content": text})
 
     def _on_scroll_range_changed(self, _min, _max):
-        """Fires after layout recalculates. Scroll to bottom if user hasn't scrolled away."""
-        if self._auto_scroll:
-            self.scroll_area.verticalScrollBar().setValue(_max)
+        """Fires after layout recalculates. Defer scroll so geometry is settled."""
+        if self._auto_scroll and not self._scroll_pending:
+            self._scroll_pending = True
+            QTimer.singleShot(0, self._do_deferred_scroll)
+
+    def _do_deferred_scroll(self):
+        """Execute the auto-scroll after the event loop has processed pending layouts."""
+        self._scroll_pending = False
+        if not self._auto_scroll:
+            return
+        sb = self.scroll_area.verticalScrollBar()
+        self._programmatic_scroll = True
+        sb.setValue(sb.maximum())
+        self._programmatic_scroll = False
 
     def _on_user_scroll(self, value):
         """Track whether the user manually scrolled away from the bottom."""
+        if self._programmatic_scroll:
+            return  # Ignore scrolls we triggered ourselves
         sb = self.scroll_area.verticalScrollBar()
         if sb.maximum() == 0:
             return
@@ -885,8 +949,49 @@ class ChatPanel(QWidget):
 
     def _scroll_to_bottom(self):
         self._auto_scroll = True
-        sb = self.scroll_area.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        QTimer.singleShot(0, self._do_deferred_scroll)
+
+    @staticmethod
+    def _compact_for_display(text: str, max_chars: int = 1400, max_lines: int = 40) -> str:
+        """Keep chat readable by collapsing very large payloads for UI display only."""
+        if not text:
+            return text
+        lines = text.splitlines()
+        over_lines = len(lines) > max_lines
+        over_chars = len(text) > max_chars
+        if not over_lines and not over_chars:
+            return text
+
+        kept = lines[:max_lines]
+        compact = "\n".join(kept)
+        if len(compact) > max_chars:
+            compact = compact[:max_chars].rstrip()
+        hidden_lines = max(0, len(lines) - len(kept))
+        hidden_chars = max(0, len(text) - len(compact))
+        compact += (
+            f"\n\n...[{hidden_lines} lines / {hidden_chars} chars hidden in chat view]..."
+        )
+        return compact
+
+    def _compact_assistant_display(self, text: str) -> str:
+        """Hide code fences in assistant replies while preserving narrative text."""
+        import re as _re
+        if not text:
+            return text
+
+        def _repl(match):
+            block = match.group(0)
+            content = block[3:-3]
+            lang = ""
+            if "\n" in content:
+                lang = content.split("\n", 1)[0].strip()
+            body = content.split("\n", 1)[1] if "\n" in content else content
+            lines = max(1, body.count("\n") + 1)
+            label = lang or "code"
+            return f"\n```{label}\n[code block hidden: {lines} lines]\n```"
+
+        compact = _re.sub(r"```[\w-]*\n.*?```", _repl, text, flags=_re.DOTALL)
+        return self._compact_for_display(compact, max_chars=1800, max_lines=60)
 
     # ------------------------------------------------------------------
     # Conversation history (multi-conversation support)
@@ -983,7 +1088,14 @@ class ChatPanel(QWidget):
 
             self.conversation_id = data.get("conversation_id", conv_id)
             self.messages = data.get("messages", [])
-            for m in self.messages:
+            render_msgs = self.messages[-self.MAX_RENDERED_MESSAGES:]
+            hidden = max(0, len(self.messages) - len(render_msgs))
+            if hidden > 0:
+                self.append_message_widget(
+                    "system",
+                    f"[{hidden} older messages hidden for performance. Full history is preserved.]"
+                )
+            for m in render_msgs:
                 self.append_message_widget(m["role"], m.get("content", ""))
             # Update the pointer
             pointer = os.path.join(self._history_dir(), "current.txt")
@@ -1141,7 +1253,8 @@ class ChatPanel(QWidget):
                     "1. Draft: Analyze the request. Plan numbered phases.\n"
                     "2. Execute: Perform ONE phase at a time using tools.\n"
                     "3. Report: After receiving [TOOL_RESULT], you MUST write a DETAILED SUMMARY.\n"
-                    "4. STOP: After the summary, STOP and wait for user to authorize the next phase.\n\n"
+                    "4. Continue: After each summary, continue to the next phase automatically until the task is complete.\n"
+                    "5. Pause only if required: ask the user only when clarification/approval is truly needed.\n\n"
                     "PHASE SUMMARY FORMAT (CRITICAL — follow this EVERY time):\n"
                     "After each phase completes, your response MUST include:\n"
                     "  - **What was done**: Specific actions taken and files touched\n"
@@ -1152,7 +1265,7 @@ class ChatPanel(QWidget):
                     "what happened and what you found. If the user asked you to investigate "
                     "something, REPORT YOUR FINDINGS in detail.\n\n"
                     "CRITICAL: [TOOL_RESULT] messages are automated tool outputs, NOT user approval.\n"
-                    "CRITICAL: After your summary, return TEXT ONLY. Do NOT emit more tool calls."
+                    "CRITICAL: After your summary, you may continue with the next phase and tool calls as needed."
                 )
                 history_to_send.append({"role": "system", "content": phased_prompt})
         
@@ -1306,8 +1419,20 @@ class ChatPanel(QWidget):
 
     def handle_ai_chunk(self, chunk):
         self.current_ai_response += chunk
-        if self.current_ai_item:
-            self.current_ai_item.set_text(self.current_ai_response)
+        self._ai_text_dirty = True
+        if not self._ai_update_timer.isActive():
+            self._ai_update_timer.start()
+
+    def _flush_ai_text(self):
+        """Push accumulated AI text to the widget (called by timer)."""
+        if self._ai_text_dirty and self.current_ai_item:
+            # Stream a compact preview to prevent giant code dumps from destabilizing scroll.
+            preview = self._compact_for_display(
+                self.current_ai_response, max_chars=1200, max_lines=45)
+            self.current_ai_item.set_text(preview)
+            self._ai_text_dirty = False
+            if self._auto_scroll:
+                self._scroll_to_bottom()
 
     def handle_ai_usage(self, usage):
         if self.current_ai_item:
@@ -1368,6 +1493,12 @@ class ChatPanel(QWidget):
         return super().eventFilter(obj, event)
 
     def handle_ai_finished(self):
+        # Stop the streaming buffer timer and flush final text
+        self._ai_update_timer.stop()
+        self._ai_text_dirty = False
+        if self.current_ai_item:
+            self.current_ai_item.set_text(self._compact_assistant_display(self.current_ai_response))
+
         log.debug("handle_ai_finished: response_len=%d chars", len(self.current_ai_response))
 
         # Extract <thought> blocks and display them in a collapsible panel,
@@ -1380,17 +1511,13 @@ class ChatPanel(QWidget):
             thought_text = "\n---\n".join(t.strip() for t in thought_blocks)
             thought_item = ProgressItem()
             thought_item.set_thought(thought_text)
-            idx = self.chat_layout.indexOf(self.current_ai_item)
-            if idx >= 0:
-                self.chat_layout.insertWidget(idx, thought_item)
-            else:
-                self.chat_layout.addWidget(thought_item)
+            self._add_chat_widget(thought_item, before_widget=self.current_ai_item)
             thought_item.finish()
 
         if display_response != self.current_ai_response:
             self.current_ai_response = display_response
-            if self.current_ai_item:
-                self.current_ai_item.set_text(display_response)
+        if self.current_ai_item:
+            self.current_ai_item.set_text(self._compact_assistant_display(display_response))
 
         self.messages.append({"role": "assistant", "content": self.current_ai_response})
         self.save_conversation()
@@ -1404,18 +1531,19 @@ class ChatPanel(QWidget):
         if tools:
             current_mode = self.mode_combo.currentText()
             is_siege = "Siege" in current_mode
-            max_loops = 25 if is_siege else 3
+            # Keep a shared safety ceiling across modes.
+            max_loops = 25 if is_siege else 25
             loop_count = getattr(self, 'tool_loop_count', 0)
 
             if loop_count >= max_loops:
                 log.info("Tool loop limit reached (%d). Pausing for user input.", max_loops)
                 self.append_message_widget(
                     "system",
-                    f"[Phase gate: {max_loops} tool cycles completed. Send a message to continue.]"
+                    f"[Phased mode pause: {max_loops} tool cycles completed. Send a message to continue.]"
                 )
                 self._reset_send_button()
                 self.notification_requested.emit(
-                    "Phase Gate Reached",
+                    "Phased Mode Pause",
                     f"{max_loops} tool cycles completed. Waiting for your input."
                 )
             else:
@@ -1429,12 +1557,14 @@ class ChatPanel(QWidget):
 
     def _start_tool_execution(self, tools):
         tool_names = [c['cmd'] for c in tools]
+        self._tool_calls_for_run = list(tool_names)
+        self._tool_action_log = []
         summary = ", ".join(tool_names)
         if len(summary) > 80:
             summary = f"{len(tools)} tools"
 
         self.progress_item = ProgressItem()
-        self.chat_layout.addWidget(self.progress_item)
+        self._add_chat_widget(self.progress_item)
         self.progress_item.set_thought(f"Running: {summary}")
         self._auto_scroll = True
         
@@ -1467,6 +1597,7 @@ class ChatPanel(QWidget):
 
     def _handle_tool_step_finished(self, title, detail, result):
         """Update the progress item's last step with a completion indicator."""
+        self._tool_action_log.append(f"{title} -> {result}")
         if hasattr(self, 'progress_item') and self.progress_item:
             icon = "✓" if result == "Done" else "✗" if result == "Failed" else "⊘"
             self.progress_item.update_step_status(icon, result)
@@ -1509,8 +1640,21 @@ class ChatPanel(QWidget):
             f"{output}\n"
             "[/TOOL_RESULT]"
         )
+        tools_used = ", ".join(self._tool_calls_for_run) if self._tool_calls_for_run else "none"
+        actions = "\n".join(f"- {a}" for a in self._tool_action_log) if self._tool_action_log else "- (no actions logged)"
+        display_output = self._compact_for_display(output, max_chars=700, max_lines=10)
+        display_tool_msg = (
+            "[TOOL_RESULT] (Automated system output — compact view)\n"
+            f"Tools used: {tools_used}\n"
+            "Actions taken:\n"
+            f"{actions}\n\n"
+            "Output excerpt:\n"
+            f"{display_output}\n"
+            "[/TOOL_RESULT]"
+        )
 
-        self.append_message_widget("system", tool_msg)
+        # Show compact output to user, keep full output in history for the AI loop.
+        self.append_message_widget("system", display_tool_msg)
         self.messages.append({"role": "user", "content": tool_msg})
 
         self._start_ai_worker()

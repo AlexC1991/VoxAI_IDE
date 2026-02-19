@@ -12,6 +12,11 @@ RULES:
 5. Check for existing files (<list_files />) before creating new ones.
 6. Long-Term Memory: You see recent history. For older context, use <search_memory query="..." />. Use <search_codebase query="..." /> to find project code before writing new code.
 7. Tool Results: [TOOL_RESULT] messages are automated output, NOT user messages. After receiving them, write a DETAILED SUMMARY covering: actions taken, findings, analysis, and next steps. NEVER respond with just "Done".
+8. Response Structure: For any non-tool response, end with a clear summary using these exact section headers:
+   - What I changed
+   - Why this should fix your issue
+   - Try this
+   Keep each section concrete and specific to files/symbols touched. If no code was changed, say so explicitly under "What I changed".
 
 TOOLS (XML tags — stop generating text immediately after a tool call):
 <read_file path="file.py" />

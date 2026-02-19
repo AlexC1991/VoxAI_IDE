@@ -11,18 +11,18 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# ── Palette ──
+# ── Palette (Claude Code inspired) ──
 _BG         = "#111113"
-_C_USER     = "#e4e4e7"
-_C_AI       = "#d4d4d8"
-_C_SYSTEM   = "#52525b"
+_C_USER     = "#f4f4f5"      # bright white for user text
+_C_AI       = "#e8e8ec"      # near-white for AI responses
+_C_SYSTEM   = "#71717a"      # muted but readable system text
 _C_TOOL     = "#4ec9b0"
-_C_DIM      = "#52525b"
+_C_DIM      = "#71717a"
 _C_ACCENT   = "#00f3ff"
 _C_ORANGE   = "#ff9900"
 _C_LINK     = "#3794ff"
-_C_CODE_BG  = "#1a1a1d"
-_C_CODE_FG  = "#d4d4d8"
+_C_CODE_BG  = "#0d0d0f"      # darker code block background for contrast
+_C_CODE_FG  = "#e4e4e7"
 _C_ERR      = "#f14c4c"
 _C_GREEN    = "#4ec9b0"
 
@@ -30,12 +30,12 @@ _FONT_MONO  = "Consolas, 'Courier New', 'Fira Code', monospace"
 _FONT_SANS  = "'Segoe UI', 'Inter', system-ui, sans-serif"
 
 _ROLE_CSS = (
-    "color: %s; font-family: {m}; font-size: 11px; font-weight: 600; "
-    "background: transparent; padding: 0; margin: 0; letter-spacing: 0.3px;"
+    "color: %s; font-family: {m}; font-size: 12px; font-weight: 700; "
+    "background: transparent; padding: 0; margin: 0; letter-spacing: 0.4px;"
 ).replace("{m}", _FONT_MONO)
 
 _SMALL_BTN = (
-    "QPushButton { background: transparent; color: #3f3f46; border: none; "
+    "QPushButton { background: transparent; color: #52525b; border: none; "
     "font-family: %s; font-size: 10px; padding: 0 4px; }"
     "QPushButton:hover { color: #a1a1aa; }"
 ) % _FONT_MONO
@@ -68,23 +68,18 @@ class MessageItem(QWidget):
 
         # Determine colors
         if is_user:
-            label_color = _C_ORANGE
-            text_color = _C_USER
             role_name = "You"
         elif is_ai:
-            label_color = _C_ACCENT
-            text_color = _C_AI
             role_name = "VoxAI"
         elif is_tool:
-            label_color = _C_GREEN
-            text_color = _C_TOOL
             role_name = "Tool"
         else:
-            label_color = _C_DIM
-            text_color = _C_SYSTEM
             role_name = "System"
 
+        label_color, text_color = self._role_colors(role_lower)
+
         self.current_color = text_color
+        self.current_label_color = label_color
 
         # ── Tool results: collapsible ──
         if is_tool_result:
@@ -99,7 +94,7 @@ class MessageItem(QWidget):
         hdr.setSpacing(4)
 
         self.role_label = QLabel(role_name)
-        self.role_label.setStyleSheet(_ROLE_CSS % label_color)
+        self.role_label.setStyleSheet(_ROLE_CSS % self.current_label_color)
         hdr.addWidget(self.role_label)
         hdr.addStretch()
 
@@ -127,19 +122,19 @@ class MessageItem(QWidget):
 
         if is_ai:
             self.content_label.setStyleSheet(
-                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 13px; "
-                f"background: transparent; padding: 2px 0 0 10px; margin: 0; "
-                f"line-height: 1.45; border-left: 2px solid #1e1e21;")
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 14px; "
+                f"background: transparent; padding: 4px 0 2px 12px; margin: 0; "
+                f"line-height: 1.55; border-left: 2px solid #27272a;")
         elif is_user:
             self.content_label.setStyleSheet(
-                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 13px; "
-                f"background: transparent; padding: 2px 0 0 0; margin: 0; "
-                f"line-height: 1.4;")
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 14px; "
+                f"background: transparent; padding: 4px 0 2px 0; margin: 0; "
+                f"line-height: 1.5;")
         else:
             self.content_label.setStyleSheet(
-                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 11px; "
-                f"background: transparent; padding: 1px 0; margin: 0; "
-                f"line-height: 1.3;")
+                f"color: {text_color}; font-family: {_FONT_MONO}; font-size: 12px; "
+                f"background: transparent; padding: 2px 0; margin: 0; "
+                f"line-height: 1.4;")
 
         self.content_label.setText(self._format(text, text_color))
         layout.addWidget(self.content_label)
@@ -147,8 +142,8 @@ class MessageItem(QWidget):
         # ── Footer (token usage) ──
         self.footer_label = QLabel()
         self.footer_label.setStyleSheet(
-            f"color: #3f3f46; font-family: {_FONT_MONO}; font-size: 10px; "
-            f"background: transparent; padding: 2px 0 0 10px;")
+            f"color: #52525b; font-family: {_FONT_MONO}; font-size: 11px; "
+            f"background: transparent; padding: 3px 0 0 12px;")
         self.footer_label.hide()
         layout.addWidget(self.footer_label)
 
@@ -211,20 +206,25 @@ class MessageItem(QWidget):
         self.copy_requested.emit(self.original_text)
 
     def update_appearance(self):
-        user_color = self.settings_manager.get_chat_user_color()
-        ai_color = self.settings_manager.get_chat_ai_color()
         role_lower = self.role.lower()
-        if role_lower == "user":
-            color = user_color or _C_USER
-        elif role_lower in ("ai", "assistant"):
-            color = ai_color or _C_AI
-        elif role_lower == "tool":
-            color = _C_GREEN
-        else:
-            color = _C_SYSTEM
-        self.current_color = color
+        label_color, text_color = self._role_colors(role_lower)
+        self.current_label_color = label_color
+        self.current_color = text_color
+        if hasattr(self, "role_label"):
+            self.role_label.setStyleSheet(_ROLE_CSS % self.current_label_color)
         if hasattr(self, 'original_text'):
             self.set_text(self.original_text)
+
+    def _role_colors(self, role_lower: str) -> tuple[str, str]:
+        user_color = (self.settings_manager.get_chat_user_color() or _C_USER).strip()
+        ai_color = (self.settings_manager.get_chat_ai_color() or _C_AI).strip()
+        if role_lower == "user":
+            return user_color, user_color
+        if role_lower in ("ai", "assistant"):
+            return ai_color, ai_color
+        if role_lower == "tool":
+            return _C_GREEN, _C_TOOL
+        return _C_DIM, _C_SYSTEM
 
     def set_text(self, text: str):
         self.original_text = text
@@ -264,8 +264,8 @@ class MessageItem(QWidget):
         lang_badge = ""
         if lang:
             lang_badge = (
-                f'<span style="color:{_C_DIM}; font-size:10px; '
-                f'font-family:{_FONT_MONO};">{lang}</span><br>')
+                f'<span style="color:{_C_DIM}; font-size:11px; '
+                f'font-family:{_FONT_MONO}; font-weight:600;">{lang}</span><br>')
 
         try:
             from pygments import highlight
@@ -274,10 +274,11 @@ class MessageItem(QWidget):
             formatter = HtmlFormatter(
                 style='monokai', noclasses=True,
                 cssstyles=(
-                    f"padding: 10px; border-radius: 6px; "
+                    f"padding: 12px; border-radius: 6px; "
                     f"background-color: {_C_CODE_BG}; color: {_C_CODE_FG}; "
-                    f"display: block; white-space: pre-wrap; font-size: 12px; "
-                    f"font-family: {_FONT_MONO}; margin: 4px 0;"))
+                    f"display: block; white-space: pre-wrap; font-size: 13px; "
+                    f"font-family: {_FONT_MONO}; margin: 6px 0; "
+                    f"border: 1px solid #1e1e21;"))
             try:
                 lexer = get_lexer_by_name(lang) if lang else guess_lexer(code)
             except Exception:
@@ -289,8 +290,9 @@ class MessageItem(QWidget):
             return (
                 lang_badge +
                 f'<pre style="background:{_C_CODE_BG}; color:{_C_CODE_FG}; '
-                f'padding:10px; border-radius:6px; font-family:{_FONT_MONO}; '
-                f'font-size:12px; margin:4px 0; white-space:pre-wrap;">'
+                f'padding:12px; border-radius:6px; font-family:{_FONT_MONO}; '
+                f'font-size:13px; margin:6px 0; white-space:pre-wrap; '
+                f'border: 1px solid #1e1e21;">'
                 f'{escaped}</pre>')
 
     def _render_text(self, text: str, color: str) -> str:
@@ -299,12 +301,12 @@ class MessageItem(QWidget):
         safe = re.sub(
             r'`([^`]+)`',
             rf'<code style="background:{_C_CODE_BG}; color:{_C_LINK}; '
-            rf'padding:1px 4px; border-radius:3px; font-family:{_FONT_MONO}; '
-            rf'font-size:12px;">\1</code>', safe)
+            rf'padding:2px 5px; border-radius:3px; font-family:{_FONT_MONO}; '
+            rf'font-size:13px; border: 1px solid #1e1e21;">\1</code>', safe)
         safe = safe.replace('\n', '<br>')
         return (
             f'<span style="color:{color}; font-family:{_FONT_MONO}; '
-            f'font-size: 13px;">{safe}</span>')
+            f'font-size: 14px; line-height: 1.55;">{safe}</span>')
 
 
 class ProgressItem(QWidget):

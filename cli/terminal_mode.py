@@ -148,6 +148,8 @@ class TerminalEngine:
         self.model = model
         self.mode = mode
         self.messages: list[dict] = []
+        self.conversation_id = "terminal"
+        self._stop_requested = False
         self.tool_loop_limit = 25 if "siege" in mode.lower() else 3
 
         self._load_conversation()
@@ -195,6 +197,12 @@ class TerminalEngine:
                 with open(self.conv_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.messages = data.get("messages", [])
+                conv_id = data.get("conversation_id")
+                if isinstance(conv_id, str) and conv_id.strip():
+                    self.conversation_id = conv_id.strip()
+                elif self.conv_file:
+                    self.conversation_id = os.path.splitext(
+                        os.path.basename(self.conv_file))[0]
                 n = len(self.messages)
                 print(f"{C.GREEN}  Loaded {n} messages from GUI session{C.RESET}")
             except Exception as e:
@@ -207,10 +215,15 @@ class TerminalEngine:
             parent = os.path.dirname(self.conv_file)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            data = {"conversation_id": "terminal",
-                    "messages": self.messages}
+            data = {
+                "conversation_id": self.conversation_id or "terminal",
+                "messages": self.messages,
+            }
             with open(self.conv_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            pointer = os.path.join(parent, "current.txt")
+            with open(pointer, 'w', encoding='utf-8') as f:
+                f.write(self.conversation_id or "terminal")
         except Exception as e:
             print(f"{C.RED}  Save failed: {e}{C.RESET}")
 
@@ -256,6 +269,7 @@ class TerminalEngine:
 
     # ── AI chat ──
     def chat(self, user_text: str):
+        self._stop_requested = False
         self.messages.append({"role": "user", "content": user_text})
 
         from core.prompts import SystemPrompts
@@ -294,6 +308,9 @@ class TerminalEngine:
             response = self._stream_response(ai, history)
             if not response:
                 break
+            if self._stop_requested:
+                self.messages.append({"role": "system", "content": "[Interrupted by user]"})
+                break
 
             self.messages.append({"role": "assistant", "content": response})
             re.sub(r'<thought>.*?</thought>\s*', '', response, flags=re.DOTALL).strip()
@@ -309,6 +326,9 @@ class TerminalEngine:
                 break
 
             tool_output = self._execute_tools(tools)
+            if self._stop_requested:
+                self.messages.append({"role": "system", "content": "[Interrupted by user]"})
+                break
             tool_msg = (
                 "[TOOL_RESULT] (Automated system output — not user input)\n"
                 f"{tool_output}\n[/TOOL_RESULT]")
@@ -346,6 +366,7 @@ class TerminalEngine:
                     print(clean, end="", flush=True)
 
         except KeyboardInterrupt:
+            self._stop_requested = True
             print(f"\n{C.YELLOW}  [Interrupted]{C.RESET}")
         except Exception as e:
             print(f"\n{C.RED}  [Error: {e}]{C.RESET}")
@@ -357,6 +378,9 @@ class TerminalEngine:
         outputs = []
 
         for call in tools:
+            if self._stop_requested:
+                outputs.append("[Interrupted] Tool execution stopped by user.")
+                break
             cmd = call['cmd']
             args = call['args']
             print(f"  {C.ORANGE}⚡ {cmd}{C.RESET}", end="")
@@ -502,6 +526,11 @@ class TerminalEngine:
                     outputs.append(f"Unknown tool: {cmd}")
                     print(f" {C.RED}?{C.RESET}")
 
+            except KeyboardInterrupt:
+                self._stop_requested = True
+                outputs.append(f"[Interrupted] {cmd} aborted by user.")
+                print(f" {C.YELLOW}⏹ interrupted{C.RESET}")
+                break
             except Exception as e:
                 outputs.append(f"[TOOL_ERROR] {cmd}: {e}")
                 print(f" {C.RED}✗ {e}{C.RESET}")
@@ -719,7 +748,12 @@ def main():
             print(f"  {C.RED}Unknown command: {text.split()[0]}. Type /help{C.RESET}")
             continue
 
-        engine.chat(text)
+        try:
+            engine.chat(text)
+        except KeyboardInterrupt:
+            # Keep terminal session alive and avoid crashing back to GUI in a bad state.
+            print(f"\n{C.YELLOW}  [Interrupted]{C.RESET}")
+            engine.save_conversation()
 
     engine.save_conversation()
     print(f"\n{C.CYAN}  Session saved. Goodbye.{C.RESET}\n")
