@@ -3,14 +3,6 @@ from unittest.mock import patch, MagicMock
 import sys
 import os
 
-# Mock core.settings to avoid PySide6 dependency issues during test if needed
-sys.modules["core.settings"] = MagicMock()
-
-# Now import AIClient
-# We need to make sure the import works even if we mocked settings
-# The file core/ai_client.py does "from core.settings import SettingsManager"
-# Our mock should handle that.
-
 # Adjust path to find core
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -52,19 +44,42 @@ class TestFetchModels(unittest.TestCase):
         mock_response.json.return_value = {
             "data": [
                 {"id": "anthropic/claude-3"},
-                {"id": "openai/gpt-4o"}
+                {"id": "openai/gpt-4o"},
+                {"id": "qwen/qwen3-coder:free"},
+                {"id": "z-ai/glm-4.5-air:free"}
             ]
         }
         mock_get.return_value = mock_response
         
         models = AIClient.fetch_models("openrouter", "fake-key")
         
+        self.assertEqual(models[:2], ["qwen/qwen3-coder:free", "z-ai/glm-4.5-air:free"])
         self.assertIn("anthropic/claude-3", models)
         # Check URL: https://openrouter.ai/api/v1/chat/completions -> https://openrouter.ai/api/v1/models
         mock_get.assert_called_with(
             "https://openrouter.ai/api/v1/models",
             headers={'Authorization': 'Bearer fake-key'}, # Note: header name is actually Authorization for OpenRouter in config
             timeout=10
+        )
+
+    def test_sort_model_ids_prioritizes_curated_openrouter_free_models(self):
+        ordered = AIClient._sort_model_ids("openrouter", [
+            "openrouter/auto",
+            "google/gemma-3-4b-it:free",
+            "qwen/qwen3-coder:free",
+            "anthropic/claude-3",
+            "z-ai/glm-4.5-air:free",
+            "qwen/qwen3-coder:free",
+        ])
+
+        self.assertEqual(
+            ordered[:4],
+            [
+                "qwen/qwen3-coder:free",
+                "z-ai/glm-4.5-air:free",
+                "google/gemma-3-4b-it:free",
+                "openrouter/auto",
+            ],
         )
 
     @patch('core.ai_client.requests.get')

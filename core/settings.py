@@ -1,9 +1,23 @@
 
+import json
+import os
+from glob import glob
+
 from PySide6.QtCore import QSettings
 
 class SettingsManager:
     _instance = None
     _settings = None
+    DEFAULT_OPENROUTER_MODELS = [
+        "[OpenRouter] qwen/qwen3-coder:free",
+        "[OpenRouter] z-ai/glm-4.5-air:free",
+        "[OpenRouter] google/gemma-3-4b-it:free",
+        "[OpenRouter] meta-llama/llama-3.2-3b-instruct:free",
+        "[OpenRouter] openrouter/auto",
+    ]
+    DEFAULT_TEST_MODEL = "[Test] scripted-agent"
+    DEFAULT_TEST_PROVIDER_SCRIPT_PATH = ".vox/test_provider_script.json"
+    DEFAULT_ENABLED_MODELS = list(DEFAULT_OPENROUTER_MODELS)
 
     def __new__(cls):
         if cls._instance is None:
@@ -71,6 +85,52 @@ class SettingsManager:
     def set_local_llm_url(self, url):
         self.settings.setValue("urls/local_llm", url)
 
+    @staticmethod
+    def _repo_root():
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def is_test_provider_enabled(self) -> bool:
+        env = os.getenv("VOXAI_ENABLE_TEST_PROVIDER", "")
+        if str(env).strip().lower() in ("1", "true", "yes", "on"):
+            return True
+        return os.path.exists(self.get_test_provider_script_abspath())
+
+    def get_test_provider_script_path(self) -> str:
+        return self.settings.value(
+            "test_provider/script_path",
+            self.DEFAULT_TEST_PROVIDER_SCRIPT_PATH,
+        )
+
+    def set_test_provider_script_path(self, path: str):
+        self.settings.setValue(
+            "test_provider/script_path",
+            (path or self.DEFAULT_TEST_PROVIDER_SCRIPT_PATH).strip() or self.DEFAULT_TEST_PROVIDER_SCRIPT_PATH,
+        )
+
+    def get_test_provider_script_abspath(self) -> str:
+        path = (self.get_test_provider_script_path() or self.DEFAULT_TEST_PROVIDER_SCRIPT_PATH).strip()
+        if os.path.isabs(path):
+            return path
+        return os.path.join(self._repo_root(), path)
+
+    def list_test_provider_scenarios(self):
+        pattern = os.path.join(self._repo_root(), ".vox", "test_provider*.json")
+        found = []
+        for full_path in sorted(glob(pattern)):
+            rel_path = os.path.relpath(full_path, self._repo_root()).replace("\\", "/")
+            found.append({
+                "label": os.path.basename(rel_path),
+                "path": rel_path,
+            })
+
+        current = (self.get_test_provider_script_path() or "").strip().replace("\\", "/")
+        if current and not any(item["path"] == current for item in found):
+            found.insert(0, {
+                "label": f"Custom: {os.path.basename(current)}",
+                "path": current,
+            })
+        return found
+
     # -----------------------------
     # RAG / Vector engine settings
     # -----------------------------
@@ -117,9 +177,23 @@ class SettingsManager:
     def set_selected_model(self, model):
         self.settings.setValue("models/selected", model)
 
+    def get_openrouter_health_state(self) -> dict:
+        raw = self.settings.value("openrouter/health_state", "{}")
+        if isinstance(raw, dict):
+            return raw
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def set_openrouter_health_state(self, state: dict):
+        payload = state if isinstance(state, dict) else {}
+        self.settings.setValue("openrouter/health_state", json.dumps(payload))
+
     def get_enabled_models(self):
         """Returns the list of models enabled by the user (Right side list), plus local GGUF models."""
-        default_models = []
+        default_models = list(self.DEFAULT_ENABLED_MODELS)
         stored = self.settings.value("models/enabled_list", default_models)
         if not isinstance(stored, list):
             stored = default_models
@@ -133,6 +207,9 @@ class SettingsManager:
             display_name = f"[Local] {lm}"
             if display_name not in final_list:
                 final_list.append(display_name)
+
+        if self.is_test_provider_enabled() and self.DEFAULT_TEST_MODEL not in final_list:
+            final_list.append(self.DEFAULT_TEST_MODEL)
                 
         return final_list
 

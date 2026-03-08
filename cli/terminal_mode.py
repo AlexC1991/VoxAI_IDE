@@ -54,6 +54,18 @@ def _enable_ansi_windows():
         pass
 
 
+def _configure_stdio():
+    """Best-effort UTF-8 stdio so the Windows terminal path can print the banner safely."""
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 BANNER = rf"""
 {C.CYAN}{C.BOLD}
  ██╗   ██╗ ██████╗ ██╗  ██╗ █████╗ ██╗
@@ -135,6 +147,8 @@ def _git(args: list[str], cwd: str) -> str:
 class TerminalEngine:
     def __init__(self, project_root: str, conv_file: str,
                  model: str, mode: str):
+        _enable_ansi_windows()
+        _configure_stdio()
         os.chdir(project_root)
         from core.agent_tools import set_project_root
         set_project_root(project_root)
@@ -150,7 +164,10 @@ class TerminalEngine:
         self.messages: list[dict] = []
         self.conversation_id = "terminal"
         self._stop_requested = False
-        self.tool_loop_limit = 25 if "siege" in mode.lower() else 3
+        self._phased_summary_pending = False
+        self._last_tool_signature = None
+        self._repeat_tool_batches = 0
+        self.tool_loop_limit = 12 if "siege" in mode.lower() else 1
 
         self._load_conversation()
 
@@ -229,16 +246,47 @@ class TerminalEngine:
 
     def clear(self):
         self.messages = []
+        self._reset_run_state()
         print(f"{C.YELLOW}  Context cleared.{C.RESET}")
 
     def toggle_mode(self):
         if "siege" in self.mode.lower():
             self.mode = "phased"
-            self.tool_loop_limit = 3
+            self.tool_loop_limit = 1
         else:
             self.mode = "siege"
-            self.tool_loop_limit = 25
+            self.tool_loop_limit = 12
         print(f"{C.ORANGE}  Mode: {self.mode.upper()}{C.RESET}")
+
+    def _reset_run_state(self):
+        self._stop_requested = False
+        self._phased_summary_pending = False
+        self._last_tool_signature = None
+        self._repeat_tool_batches = 0
+
+    def _is_siege_mode(self) -> bool:
+        return "siege" in self.mode.lower()
+
+    @staticmethod
+    def _is_ai_error_response(text: str) -> bool:
+        return (text or "").strip().startswith("[Error:")
+
+    @staticmethod
+    def _normalize_tool_arg(value) -> str:
+        text = str(value).replace("\r\n", "\n")
+        if len(text) > 140:
+            text = text[:100] + f"...[{len(text) - 120} chars omitted]..." + text[-20:]
+        return text
+
+    def _tool_signature(self, tools: list[dict]) -> tuple:
+        signature = []
+        for call in tools:
+            args = tuple(sorted(
+                (k, self._normalize_tool_arg(v))
+                for k, v in (call.get("args") or {}).items()
+            ))
+            signature.append((call.get("cmd", ""), args))
+        return tuple(signature)
 
     def show_tokens(self):
         total_chars = sum(len(m.get("content", "")) for m in self.messages)
@@ -269,7 +317,7 @@ class TerminalEngine:
 
     # ── AI chat ──
     def chat(self, user_text: str):
-        self._stop_requested = False
+        self._reset_run_state()
         self.messages.append({"role": "user", "content": user_text})
 
         from core.prompts import SystemPrompts
@@ -283,11 +331,13 @@ class TerminalEngine:
 
         history = [{"role": "system", "content": base_prompt}]
 
-        if "siege" in self.mode.lower() and not is_local:
+        if self._is_siege_mode() and not is_local:
             history.append({"role": "system", "content":
                 "COMMAND & CONTROL: MODE 2 (SIEGE MODE / FULL AUTO)\n"
-                "AUTHORIZATION GRANTED: \"GO LIMITLESS\"\n"
-                "Execute all phases without pausing. DO NOT STOP.\n\n"
+                "AUTHORIZATION GRANTED: \"AUTONOMY WITH LOOP GUARDS\"\n"
+                "Continue autonomously only while each next action is informed by NEW evidence or a materially different plan.\n"
+                "Never repeat the exact same tool call or failing command more than twice in a row.\n"
+                "If you are interrupted, denied approval, or stop making progress, pause and summarize instead of pushing ahead.\n\n"
                 "FINAL SUMMARY (CRITICAL): When the task is COMPLETE, end with a "
                 "detailed summary of what you did, key findings, and next steps. "
                 "NEVER end with just \"Done\"."})
@@ -296,45 +346,78 @@ class TerminalEngine:
                 "COMMAND & CONTROL: MODE 1 (PHASED)\n"
                 "Execute one phase at a time. After [TOOL_RESULT], write a "
                 "DETAILED SUMMARY of what was done, what was found, your assessment, "
-                "and next steps. NEVER say just \"Phase completed\". STOP after the summary."})
+                "and next steps. NEVER say just \"Phase completed\". STOP after the summary and wait for the user before any more tool calls."})
 
         recent = self.messages[-40:]
         history.extend(recent)
+
+        selected_model, preflight_note = AIClient.auto_select_openrouter_model(self.settings, run_probe=True)
+        if selected_model:
+            self.model = selected_model
+        if preflight_note:
+            print(f"{C.YELLOW}  [{preflight_note}]{C.RESET}")
 
         ai = AIClient()
         tool_loops = 0
 
         while True:
             response = self._stream_response(ai, history)
+            self.model = self.settings.get_selected_model() or self.model
             if not response:
                 break
             if self._stop_requested:
                 self.messages.append({"role": "system", "content": "[Interrupted by user]"})
                 break
 
-            self.messages.append({"role": "assistant", "content": response})
-            re.sub(r'<thought>.*?</thought>\s*', '', response, flags=re.DOTALL).strip()
+            clean_response = re.sub(r'<thought>.*?</thought>\s*', '', response, flags=re.DOTALL).strip()
+            self.messages.append({"role": "assistant", "content": clean_response})
 
-            tools = CodeParser.parse_tool_calls(response)
-            if not tools:
+            if self._is_ai_error_response(clean_response):
+                self._phased_summary_pending = False
+                print(f"{C.RED}  [AI provider error; agent run paused.]{C.RESET}")
                 break
 
-            tool_loops += 1
+            tools = CodeParser.parse_tool_calls(clean_response)
+            if not tools:
+                if self._phased_summary_pending and not self._is_siege_mode():
+                    self._phased_summary_pending = False
+                    print(f"\n{C.YELLOW}  [Phased mode summary complete. Send 'continue' for the next phase.]{C.RESET}")
+                break
+
+            if self._phased_summary_pending and not self._is_siege_mode():
+                self._phased_summary_pending = False
+                print(f"\n{C.YELLOW}  [Phased mode paused after the summary. Send 'continue' to allow the next tool batch.]{C.RESET}")
+                break
+
             if tool_loops >= self.tool_loop_limit:
-                print(f"\n{C.YELLOW}  [Phase gate: {self.tool_loop_limit} tool cycles. "
-                      f"Send a message to continue.]{C.RESET}")
+                print(f"\n{C.YELLOW}  [Loop guard: {self.tool_loop_limit} tool cycle(s) reached. "
+                      f"Send a new message to continue.]{C.RESET}")
+                break
+
+            signature = self._tool_signature(tools)
+            if signature == self._last_tool_signature:
+                self._repeat_tool_batches += 1
+            else:
+                self._last_tool_signature = signature
+                self._repeat_tool_batches = 1
+
+            repeat_limit = 3 if self._is_siege_mode() else 2
+            if self._repeat_tool_batches >= repeat_limit:
+                print(f"\n{C.YELLOW}  [Loop guard: same tool batch proposed {self._repeat_tool_batches} times in a row. Waiting for user input.]{C.RESET}")
                 break
 
             tool_output = self._execute_tools(tools)
             if self._stop_requested:
                 self.messages.append({"role": "system", "content": "[Interrupted by user]"})
                 break
+            tool_loops += 1
             tool_msg = (
                 "[TOOL_RESULT] (Automated system output — not user input)\n"
                 f"{tool_output}\n[/TOOL_RESULT]")
-            self.messages.append({"role": "user", "content": tool_msg})
-            history.append({"role": "assistant", "content": response})
-            history.append({"role": "user", "content": tool_msg})
+            self.messages.append({"role": "system", "content": tool_msg})
+            history.append({"role": "assistant", "content": clean_response})
+            history.append({"role": "system", "content": tool_msg})
+            self._phased_summary_pending = not self._is_siege_mode()
 
         self.save_conversation()
 
@@ -423,7 +506,14 @@ class TerminalEngine:
                 elif cmd == 'search_files':
                     query = args.get('query')
                     root = args.get('root_dir', '.')
-                    result = AgentToolHandler.search_files(query, root)
+                    file_pattern = args.get('file_pattern')
+                    case_insensitive = str(args.get('case_insensitive', 'false')).lower() == 'true'
+                    result = AgentToolHandler.search_files(
+                        query,
+                        root,
+                        file_pattern=file_pattern,
+                        case_insensitive=case_insensitive,
+                    )
                     outputs.append(f"Search '{query}':\n{result}")
                     print(f" {C.GREEN}✓{C.RESET}")
 
@@ -705,6 +795,7 @@ def _handle_slash(text: str, engine: TerminalEngine) -> bool:
 # ---------------------------------------------------------------------------
 def main():
     _enable_ansi_windows()
+    _configure_stdio()
 
     parser = argparse.ArgumentParser(description="VoxAI Terminal Mode")
     parser.add_argument("--project", default=os.getcwd())

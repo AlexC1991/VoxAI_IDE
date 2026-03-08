@@ -32,9 +32,19 @@ def get_project_root():
     return _project_root
 
 
+def resolve_path(path, default_to_project=True):
+    """Resolve *path* against the active project root when it is relative."""
+    if path in (None, ""):
+        return get_project_root() if default_to_project else os.path.realpath(os.getcwd())
+    if os.path.isabs(path):
+        return os.path.realpath(os.path.abspath(path))
+    base = get_project_root() if default_to_project else os.getcwd()
+    return os.path.realpath(os.path.join(base, path))
+
+
 def _is_inside_project(path):
     """Return True if *path* resolves inside the project root."""
-    real = os.path.realpath(os.path.abspath(path))
+    real = resolve_path(path)
     root = get_project_root()
     try:
         return os.path.commonpath([real, root]) == root
@@ -69,14 +79,19 @@ class AgentToolHandler:
     # READ (allowed everywhere)
     # ------------------------------------------------------------------
     @staticmethod
+    def resolve_path(path, default_to_project=True):
+        return resolve_path(path, default_to_project=default_to_project)
+
+    @staticmethod
     def read_file(path, start_line=1, end_line=150):
         """Reads content of a file. Defaults to first 150 lines."""
-        if not os.path.exists(path):
+        full_path = resolve_path(path)
+        if not os.path.exists(full_path):
             return f"[Error: File not found: {path}]"
-        if "crash.log" in os.path.basename(path):
+        if "crash.log" in os.path.basename(full_path):
             return "[Skipping crash.log to prevent file lock issues]"
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(full_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
 
             total_lines = len(lines)
@@ -97,15 +112,18 @@ class AgentToolHandler:
     @staticmethod
     def list_files(root_dir="."):
         """Lists all files in the directory recursively (capped at 200 entries)."""
+        base_dir = resolve_path(root_dir)
+        if not os.path.exists(base_dir):
+            return f"[Error: Path not found: {root_dir}]"
         file_list = []
         max_entries = 200
-        for root, dirs, files in os.walk(root_dir):
+        for root, dirs, files in os.walk(base_dir):
             dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
             for file in files:
                 if file == "crash.log":
                     continue
                 full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, root_dir)
+                rel_path = os.path.relpath(full_path, base_dir)
                 file_list.append(rel_path)
                 if len(file_list) >= max_entries:
                     file_list.append(f"... (capped at {max_entries} entries)")
@@ -118,6 +136,9 @@ class AgentToolHandler:
         Supports optional file_pattern glob (e.g. '*.py') and case_insensitive flag."""
         import re as _re
         import fnmatch
+        base_dir = resolve_path(root_dir)
+        if not os.path.exists(base_dir):
+            return f"[Error: Path not found: {root_dir}]"
         matches = []
         max_results = 100
         try:
@@ -128,7 +149,7 @@ class AgentToolHandler:
             except _re.error:
                 use_regex = False
 
-            for root, dirs, files in os.walk(root_dir):
+            for root, dirs, files in os.walk(base_dir):
                 dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
                 for file in files:
                     if file == "crash.log":
@@ -136,7 +157,7 @@ class AgentToolHandler:
                     if file_pattern and not fnmatch.fnmatch(file, file_pattern):
                         continue
                     path = os.path.join(root, file)
-                    rel_path = os.path.relpath(path, root_dir)
+                    rel_path = os.path.relpath(path, base_dir)
                     try:
                         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                             for i, line in enumerate(f):
@@ -158,13 +179,14 @@ class AgentToolHandler:
     @staticmethod
     def get_file_structure(path):
         """Returns the structure (classes/methods) of a Python file."""
-        if not os.path.exists(path):
+        full_path = resolve_path(path)
+        if not os.path.exists(full_path):
             return f"[Error: File not found: {path}]"
-        if not path.endswith('.py'):
+        if not full_path.endswith('.py'):
             return "[Info: structure extraction only supported for .py files]"
         try:
             import ast
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(full_path, 'r', encoding='utf-8') as f:
                 tree = ast.parse(f.read())
 
             structure = []
@@ -190,12 +212,12 @@ class AgentToolHandler:
     @staticmethod
     def write_file(path, content):
         """Writes content to a file. Must be inside the project directory."""
+        full_path = resolve_path(path)
         try:
-            _require_inside_project(path, action="write to")
+            _require_inside_project(full_path, action="write to")
         except PermissionError as e:
             return f"[Permission Denied: {e}]"
         try:
-            full_path = os.path.abspath(path)
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -207,16 +229,18 @@ class AgentToolHandler:
     def move_file(src, dst):
         """Moves or renames a file or directory. Both paths must be in the project."""
         import shutil
+        src_path = resolve_path(src)
+        dst_path = resolve_path(dst)
         try:
-            _require_inside_project(src, action="move from")
-            _require_inside_project(dst, action="move to")
+            _require_inside_project(src_path, action="move from")
+            _require_inside_project(dst_path, action="move to")
         except PermissionError as e:
             return f"[Permission Denied: {e}]"
         try:
-            dst_dir = os.path.dirname(os.path.abspath(dst))
+            dst_dir = os.path.dirname(dst_path)
             if dst_dir and not os.path.exists(dst_dir):
                 os.makedirs(dst_dir, exist_ok=True)
-            shutil.move(src, dst)
+            shutil.move(src_path, dst_path)
             return f"[Success: Moved '{src}' to '{dst}']"
         except Exception as e:
             return f"[Error moving file: {e}]"
@@ -225,15 +249,17 @@ class AgentToolHandler:
     def copy_file(src, dst):
         """Copies a file. Destination must be inside the project directory."""
         import shutil
+        src_path = resolve_path(src)
+        dst_path = resolve_path(dst)
         try:
-            _require_inside_project(dst, action="copy to")
+            _require_inside_project(dst_path, action="copy to")
         except PermissionError as e:
             return f"[Permission Denied: {e}]"
         try:
-            dst_dir = os.path.dirname(os.path.abspath(dst))
+            dst_dir = os.path.dirname(dst_path)
             if dst_dir and not os.path.exists(dst_dir):
                 os.makedirs(dst_dir, exist_ok=True)
-            shutil.copy2(src, dst)
+            shutil.copy2(src_path, dst_path)
             return f"[Success: Copied '{src}' to '{dst}']"
         except Exception as e:
             return f"[Error copying file: {e}]"
@@ -242,16 +268,17 @@ class AgentToolHandler:
     def delete_file(path):
         """Deletes a file or directory. Must be inside the project directory."""
         import shutil
+        full_path = resolve_path(path)
         try:
-            _require_inside_project(path, action="delete")
+            _require_inside_project(full_path, action="delete")
         except PermissionError as e:
             return f"[Permission Denied: {e}]"
         try:
-            if os.path.isfile(path):
-                os.remove(path)
+            if os.path.isfile(full_path):
+                os.remove(full_path)
                 return f"[Success: Deleted file '{path}']"
-            elif os.path.isdir(path):
-                shutil.rmtree(path)
+            elif os.path.isdir(full_path):
+                shutil.rmtree(full_path)
                 return f"[Success: Deleted directory '{path}']"
             else:
                 return f"[Error: Path not found '{path}']"
@@ -263,7 +290,7 @@ class AgentToolHandler:
         """Executes a shell command with streaming output capture.
         Working directory must be inside the project. Default timeout: 120s."""
         import subprocess
-        effective_cwd = cwd or os.getcwd()
+        effective_cwd = resolve_path(cwd) if cwd not in (None, "") else get_project_root()
         try:
             _require_inside_project(effective_cwd, action="execute commands in")
         except PermissionError as e:
@@ -301,11 +328,11 @@ class AgentToolHandler:
     def edit_file(path, old_text, new_text):
         """Replaces a specific text block in a file (surgical edit).
         Much more token-efficient than rewriting the whole file."""
+        full_path = resolve_path(path)
         try:
-            _require_inside_project(path, action="edit")
+            _require_inside_project(full_path, action="edit")
         except PermissionError as e:
             return f"[Permission Denied: {e}]"
-        full_path = os.path.abspath(path)
         if not os.path.exists(full_path):
             return f"[Error: File not found: {full_path}]"
         try:

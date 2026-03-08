@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon, QStatusBar,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QDialog,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QObject, QThread, Signal
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 
 from ui.chat_panel import ChatPanel
@@ -21,6 +21,7 @@ from ui.history_sidebar import HistorySidebar
 from ui.file_switcher import FileSwitcher
 from ui.code_outline import CodeOutline
 from core.runner import Runner
+from core.ai_client import AIClient
 from core.agent_tools import set_project_root, get_resource_path
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,18 @@ class CommandPalette(QDialog):
 # ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
+class OpenRouterHealthWorker(QObject):
+    finished = Signal(dict)
+
+    def run(self):
+        try:
+            summary = AIClient.refresh_openrouter_health()
+        except Exception as e:
+            log.error("OpenRouter background health refresh failed: %s", e)
+            summary = {"error": str(e), "skipped_reason": "exception"}
+        self.finished.emit(summary)
+
+
 class CodingAgentIDE(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -102,7 +115,7 @@ class CodingAgentIDE(QMainWindow):
 
         # System tray
         self._tray = QSystemTrayIcon(app_icon, self)
-        self._tray.setToolTip("VoxAI Coding Agent IDE")
+        self._tray.setToolTip("VoxAI IDE")
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
 
@@ -113,6 +126,10 @@ class CodingAgentIDE(QMainWindow):
 
         from core.settings import SettingsManager
         self.settings_manager = SettingsManager()
+        self._openrouter_health_thread = None
+        self._openrouter_health_worker = None
+        self._openrouter_health_inflight = False
+        self._openrouter_health_last_note = ""
 
         self.project_path = None
         self.runner = Runner()
@@ -240,6 +257,7 @@ class CodingAgentIDE(QMainWindow):
         self.search_panel.set_root(self.project_path)
         if hasattr(self, '_title_label') and self.project_path:
             self._title_label.setText(os.path.basename(self.project_path))
+        self._setup_openrouter_health_refresh()
 
     # ------------------------------------------------------------------
     # Status bar
@@ -253,20 +271,31 @@ class CodingAgentIDE(QMainWindow):
             "QStatusBar::item { border: none; }")
         self.setStatusBar(sb)
 
-        self._status_branch = QLabel("branch: —")
+        self._status_branch = QLabel("Branch: —")
         self._status_branch.setStyleSheet(
             "color: #71717a; padding: 0 10px; font-size: 11px;")
+        self._status_branch.setToolTip("Current git branch for the open project")
         sb.addWidget(self._status_branch)
 
         self._status_cursor = QLabel("Ln 1, Col 1")
         self._status_cursor.setStyleSheet(
             "color: #71717a; padding: 0 10px; font-size: 11px;")
+        self._status_cursor.setToolTip("Cursor position in the active editor")
         sb.addPermanentWidget(self._status_cursor)
 
         self._status_encoding = QLabel("UTF-8")
         self._status_encoding.setStyleSheet(
             "color: #52525b; padding: 0 10px; font-size: 11px;")
+        self._status_encoding.setToolTip("Encoding for the active file")
         sb.addPermanentWidget(self._status_encoding)
+
+        self._status_openrouter = QLabel("OpenRouter: inactive")
+        self._status_openrouter.setToolTip("Recommended OpenRouter model based on recent health checks")
+        sb.addPermanentWidget(self._status_openrouter)
+        self._apply_openrouter_health_indicator({
+            "status": "inactive",
+            "message": "OpenRouter: inactive",
+        })
 
         from PySide6.QtWidgets import QProgressBar
         self._token_bar = QProgressBar()
@@ -280,9 +309,10 @@ class CodingAgentIDE(QMainWindow):
             "QProgressBar::chunk { background: #00f3ff; border-radius: 5px; }")
         sb.addPermanentWidget(self._token_bar)
 
-        self._status_tokens = QLabel("0 / 24K tok")
+        self._status_tokens = QLabel("0 / 24K tokens")
         self._status_tokens.setStyleSheet(
             "color: #52525b; padding: 0 8px; font-size: 11px;")
+        self._status_tokens.setToolTip("Conversation history currently being sent to the model")
         sb.addPermanentWidget(self._status_tokens)
 
         # Periodic git branch refresh
@@ -303,7 +333,7 @@ class CodingAgentIDE(QMainWindow):
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=self.project_path, capture_output=True, text=True, timeout=3)
             if r.returncode == 0:
-                self._status_branch.setText(f"branch: {r.stdout.strip()}")
+                self._status_branch.setText(f"Branch: {r.stdout.strip()}")
         except Exception:
             pass
 
@@ -335,8 +365,96 @@ class CodingAgentIDE(QMainWindow):
         else:
             disp = str(count)
         max_disp = f"{max_tok/1000:.0f}K"
-        self._status_tokens.setText(f"{disp} / {max_disp} tok")
+        self._status_tokens.setText(f"{disp} / {max_disp} tokens")
         self._status_tokens.setStyleSheet(f"color: {color}; padding: 0 8px; font-size: 11px;")
+
+    @staticmethod
+    def _openrouter_health_indicator_style(status: str) -> str:
+        color = {
+            "healthy": "#10b981",
+            "rate_limited": "#f59e0b",
+            "policy_blocked": "#ef4444",
+            "request_failed": "#fb7185",
+            "inactive": "#52525b",
+            "unknown": "#60a5fa",
+        }.get(status or "unknown", "#60a5fa")
+        return f"color: {color}; padding: 0 10px; font-size: 11px;"
+
+    def _apply_openrouter_health_indicator(self, indicator: dict | None = None):
+        indicator = indicator or AIClient.get_openrouter_health_indicator(self.settings_manager)
+        label = getattr(self, '_status_openrouter', None)
+        if label is None:
+            return
+        message = indicator.get("message") or "OpenRouter: inactive"
+        status = indicator.get("status") or "inactive"
+        label.setText(message)
+        label.setStyleSheet(self._openrouter_health_indicator_style(status))
+        tooltip = indicator.get("recommended_full_model") or message
+        label.setToolTip(tooltip)
+
+    # ------------------------------------------------------------------
+    # Background OpenRouter health refresh
+    # ------------------------------------------------------------------
+    def _setup_openrouter_health_refresh(self):
+        if not hasattr(self, '_openrouter_health_timer') or self._openrouter_health_timer is None:
+            self._openrouter_health_timer = QTimer(self)
+            self._openrouter_health_timer.timeout.connect(self._queue_openrouter_health_refresh)
+        else:
+            self._openrouter_health_timer.stop()
+        self._openrouter_health_timer.start(AIClient.OPENROUTER_BACKGROUND_REFRESH_INTERVAL_SECONDS * 1000)
+        self._apply_openrouter_health_indicator()
+        QTimer.singleShot(15000, self._queue_openrouter_health_refresh)
+
+    def _should_run_openrouter_health_refresh(self) -> bool:
+        if self._openrouter_health_inflight:
+            return False
+        if self._terminal_proc is not None:
+            return False
+        if getattr(self.chat_panel, 'is_processing', False):
+            return False
+        return AIClient.should_background_refresh(self.settings_manager)
+
+    def _queue_openrouter_health_refresh(self):
+        if not self._should_run_openrouter_health_refresh():
+            return
+
+        self._openrouter_health_inflight = True
+        self._openrouter_health_thread = QThread()
+        self._openrouter_health_worker = OpenRouterHealthWorker()
+        self._openrouter_health_worker.moveToThread(self._openrouter_health_thread)
+
+        self._openrouter_health_thread.started.connect(self._openrouter_health_worker.run)
+        self._openrouter_health_worker.finished.connect(self._handle_openrouter_health_refresh)
+        self._openrouter_health_worker.finished.connect(self._openrouter_health_thread.quit)
+        self._openrouter_health_worker.finished.connect(self._openrouter_health_worker.deleteLater)
+        self._openrouter_health_thread.finished.connect(self._openrouter_health_thread.deleteLater)
+        self._openrouter_health_thread.finished.connect(self._clear_openrouter_health_refresh_refs)
+        self._openrouter_health_thread.start()
+
+    def _handle_openrouter_health_refresh(self, summary: dict):
+        if summary.get("error"):
+            return
+
+        log.info(
+            "OpenRouter background health refresh | probed=%s recommended=%s skipped=%s",
+            summary.get("probed_models", []),
+            summary.get("recommended_model"),
+            summary.get("skipped_reason"),
+        )
+
+        before = (self.settings_manager.get_selected_model() or "").strip()
+        selected, note = AIClient.auto_select_openrouter_model(self.settings_manager, run_probe=False)
+        if selected and selected != before:
+            self.chat_panel.refresh_models()
+            if note and note != self._openrouter_health_last_note and self.statusBar():
+                self.statusBar().showMessage(note, 7000)
+                self._openrouter_health_last_note = note
+        self._apply_openrouter_health_indicator()
+
+    def _clear_openrouter_health_refresh_refs(self):
+        self._openrouter_health_worker = None
+        self._openrouter_health_thread = None
+        self._openrouter_health_inflight = False
 
     # ------------------------------------------------------------------
     # Command Palette
@@ -501,12 +619,25 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     # Desktop notifications
     # ------------------------------------------------------------------
+    @staticmethod
+    def _notification_payload(title: str, message: str):
+        compact = " ".join((message or "").split())
+        if len(compact) > 220:
+            compact = compact[:217] + "..."
+        lowered = f"{title} {message}".lower()
+        is_error = any(token in lowered for token in ("error", "failed", "rate limit", "privacy setting", "blocked"))
+        icon = QSystemTrayIcon.Warning if is_error else QSystemTrayIcon.Information
+        timeout_ms = 12000 if is_error else 5000
+        return compact, icon, timeout_ms
+
     def _show_notification(self, title: str, message: str):
-        if self.isActiveWindow():
-            return
-        if self._tray.isSystemTrayAvailable():
-            self._tray.showMessage(title, message,
-                                   QSystemTrayIcon.Information, 5000)
+        compact, icon, timeout_ms = self._notification_payload(title, message)
+        if "openrouter" in f"{title} {message}".lower():
+            self._apply_openrouter_health_indicator()
+        if self.statusBar():
+            self.statusBar().showMessage(f"{title}: {compact}", timeout_ms)
+        if not self.isActiveWindow() and self._tray.isSystemTrayAvailable():
+            self._tray.showMessage(title, compact, icon, timeout_ms)
 
     def _on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -559,7 +690,7 @@ class CodingAgentIDE(QMainWindow):
         self.hide()
         self._tray.showMessage(
             "VoxAI Terminal Mode",
-            "IDE minimized to tray. Double-click icon to return to GUI.",
+            "IDE minimized to the tray. Double-click the tray icon to return to the GUI.",
             QSystemTrayIcon.Information, 3000)
 
         # Poll for process exit so we can restore the GUI

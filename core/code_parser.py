@@ -1,6 +1,7 @@
 
-import re
+import html
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
@@ -41,40 +42,49 @@ class CodeParser:
         Returns a list of dicts: {'cmd': 'tool_name', 'args': {...}}
         """
         calls = []
-        
+
+        if not text:
+            return calls
+
+        # Strip regions that should never be executable.
+        cleaned = re.sub(r'```[\s\S]*?```', '', text, flags=re.DOTALL)
+        cleaned = re.sub(r'<thought>[\s\S]*?</thought>', '', cleaned, flags=re.DOTALL)
+
         # Regex for attributes: key="value"
         attr_pattern = re.compile(r'(\w+)="([^"]*)"')
 
-        # 1. Find Block Tags: <tool ...>content</tool>
-        block_pattern = re.compile(r'<(\w+)([^>]*)>(.*?)</\1>', re.DOTALL)
-        
-        # We iterate over matches
-        for match in block_pattern.finditer(text):
-            tool_name = match.group(1)
-            attr_str = match.group(2)
-            content = match.group(3).strip() 
-            
-            # Parse attributes
-            args = dict(attr_pattern.findall(attr_str))
-            
-            if content:
-                args['content'] = content
-            
-            calls.append({'cmd': tool_name, 'args': args})
+        # Tools must start at the beginning of a line (ignoring indentation).
+        # This prevents inline examples like `use <read_file ... />` from firing.
+        block_pattern = re.compile(r'(?ms)^[ \t]*<(\w+)([^>]*)>(.*?)</\1>[ \t]*$')
+        self_closing_pattern = re.compile(r'(?m)^[ \t]*<(\w+)([^>]*?)\s*/>[ \t]*$')
 
-        # 2. Find Self-Closing Tags: <tool ... />
-        text_without_blocks = block_pattern.sub('', text)
-        
-        self_closing_pattern = re.compile(r'<(\w+)([^>]*?)\s*/>')
-        
-        for match in self_closing_pattern.finditer(text_without_blocks):
-            tool_name = match.group(1)
-            attr_str = match.group(2)
-            
-            args = dict(attr_pattern.findall(attr_str))
-            calls.append({'cmd': tool_name, 'args': args})
+        matches = []
+        for match in block_pattern.finditer(cleaned):
+            matches.append((match.start(), match.end(), 'block', match))
 
-        # Filter to only recognised tool commands
-        calls = [c for c in calls if c['cmd'] in CodeParser.KNOWN_TOOLS]
+        masked = cleaned
+        for start, end, _, _ in sorted(matches, reverse=True):
+            masked = masked[:start] + (' ' * (end - start)) + masked[end:]
+
+        for match in self_closing_pattern.finditer(masked):
+            matches.append((match.start(), match.end(), 'self', match))
+
+        for _, _, kind, match in sorted(matches, key=lambda item: item[0]):
+            tool_name = match.group(1)
+            if tool_name not in CodeParser.KNOWN_TOOLS:
+                continue
+
+            attr_str = match.group(2)
+            args = {
+                key: html.unescape(value)
+                for key, value in attr_pattern.findall(attr_str)
+            }
+
+            if kind == 'block':
+                content = html.unescape(match.group(3).strip())
+                if content:
+                    args['content'] = content
+
+            calls.append({'cmd': tool_name, 'args': args})
 
         return calls

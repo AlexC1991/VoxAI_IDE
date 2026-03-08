@@ -4,6 +4,7 @@ import json
 import os
 import logging
 from typing import List, Callable, Optional
+from core.agent_tools import resolve_path
 from core.rag_client import RAGClient
 
 log = logging.getLogger(__name__)
@@ -98,6 +99,7 @@ class ProjectIndexer:
     # Main index
     # ------------------------------------------------------------------
     def index_project(self, root_path: str, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> bool:
+        root_path = resolve_path(root_path)
         log.info("Starting project index for: %s", root_path)
 
         manifest = self._load_manifest(root_path)

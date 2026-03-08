@@ -22,11 +22,13 @@ from PySide6.QtCore import Qt
 from core.settings import SettingsManager
 from core.ai_client import AIClient
 
+DEFAULT_TEST_PROVIDER_SCRIPT_PATH = SettingsManager.DEFAULT_TEST_PROVIDER_SCRIPT_PATH
+
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle("VoxAI IDE Settings")
         self.resize(920, 700)
         self.settings_manager = SettingsManager()
 
@@ -44,8 +46,11 @@ class SettingsDialog(QDialog):
             ("xai", "xAI (Grok)", "xai", ["grok-beta"]),
             ("kimi", "Kimi (Moonshot)", "kimi", ["moonshot-v1-8k", "moonshot-v1-32k"]),
             ("zai", "Z.ai (Zhipu)", "zai", ["glm-4", "glm-3-turbo"]),
-            ("openrouter", "OpenRouter", "openrouter", ["openrouter/auto"]),
+            ("openrouter", "OpenRouter", "openrouter",
+             [m.split("] ", 1)[1] for m in SettingsManager.DEFAULT_OPENROUTER_MODELS]),
         ]
+        if self.settings_manager.is_test_provider_enabled():
+            self.providers.append(("test", "Test", "test", ["scripted-agent"]))
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -85,14 +90,14 @@ class SettingsDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.save_btn = QPushButton("Save Settings")
+        self.save_btn = QPushButton("Save Changes")
         self.save_btn.clicked.connect(self.save_settings)
         self.save_btn.setStyleSheet(
             "background-color: #007fd4; color: white; font-weight: bold; "
             "padding: 8px 20px; border-radius: 4px;")
         btn_layout.addWidget(self.save_btn)
 
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton("Close")
         self.cancel_btn.clicked.connect(self.reject)
         self.cancel_btn.setStyleSheet("padding: 8px 20px;")
         btn_layout.addWidget(self.cancel_btn)
@@ -110,7 +115,7 @@ class SettingsDialog(QDialog):
 
         # Provider selector
         selector_row = QHBoxLayout()
-        selector_row.addWidget(QLabel("Provider:"))
+        selector_row.addWidget(QLabel("AI Provider:"))
         self.provider_combo = QComboBox()
         for _, name, _, _ in self.providers:
             self.provider_combo.addItem(name)
@@ -147,7 +152,12 @@ class SettingsDialog(QDialog):
         key_group = QGroupBox("Configuration")
         key_layout = QHBoxLayout()
 
-        lbl_text = "API Key:" if p_id != "local" else "Server URL:"
+        if p_id == "local":
+            lbl_text = "Server URL:"
+        elif p_id == "test":
+            lbl_text = "Scenario File:"
+        else:
+            lbl_text = "API Key:"
         lbl = QLabel(lbl_text)
         lbl.setFixedWidth(80)
 
@@ -157,9 +167,16 @@ class SettingsDialog(QDialog):
             key_input.setEchoMode(QLineEdit.Normal)
             key_input.setText(self.settings_manager.get_local_llm_url())
             key_input.setPlaceholderText("http://localhost:11434/v1")
+            key_input.setToolTip("Base URL for a local OpenAI-compatible inference server")
+        elif p_id == "test":
+            key_input.setEchoMode(QLineEdit.Normal)
+            key_input.setText(self.settings_manager.get_test_provider_script_path())
+            key_input.setPlaceholderText(DEFAULT_TEST_PROVIDER_SCRIPT_PATH)
+            key_input.setToolTip("Path to the scripted test-provider file or scenario JSON")
         else:
             key_input.setText(self.settings_manager.get_api_key(p_key_name))
             key_input.setPlaceholderText(f"Enter {p_name} API Key")
+            key_input.setToolTip(f"Stored API key for {p_name}")
 
         key_layout.addWidget(lbl)
         key_layout.addWidget(key_input)
@@ -168,7 +185,21 @@ class SettingsDialog(QDialog):
         fetch_btn.setFixedWidth(120)
         fetch_btn.setStyleSheet("background-color: #2d2d2d; border: 1px solid #3e3e42;")
         fetch_btn.clicked.connect(lambda: self._fetch_models_for_provider(p_id))
+        if p_id == "test":
+            fetch_btn.setText("Reload Scenarios")
+        fetch_btn.setToolTip("Refresh the available models or scripted scenarios for this provider")
         key_layout.addWidget(fetch_btn)
+
+        scenario_combo = None
+        if p_id == "test":
+            scenario_combo = QComboBox()
+            scenario_combo.setMinimumWidth(220)
+            scenario_combo.setToolTip("Choose a saved scripted scenario for the Test provider")
+            self._populate_test_provider_scenarios(scenario_combo, key_input.text())
+            scenario_combo.currentIndexChanged.connect(
+                lambda _idx, combo=scenario_combo, line_edit=key_input: self._on_test_scenario_changed(combo, line_edit)
+            )
+            key_layout.addWidget(scenario_combo)
 
         key_group.setLayout(key_layout)
         layout.addWidget(key_group)
@@ -182,7 +213,7 @@ class SettingsDialog(QDialog):
         lists_layout.setContentsMargins(0, 0, 0, 0)
 
         v1 = QVBoxLayout()
-        v1.addWidget(QLabel("Available Models"))
+        v1.addWidget(QLabel("Available models"))
         available_list = QListWidget()
         available_list.setSelectionMode(QListWidget.MultiSelection)
         available_list.setMinimumHeight(180)
@@ -204,7 +235,7 @@ class SettingsDialog(QDialog):
         lists_layout.addLayout(btns)
 
         v2 = QVBoxLayout()
-        v2.addWidget(QLabel("Selected (Active)"))
+        v2.addWidget(QLabel("Enabled models"))
         selected_list = QListWidget()
         selected_list.setSelectionMode(QListWidget.MultiSelection)
         selected_list.setMinimumHeight(180)
@@ -221,6 +252,7 @@ class SettingsDialog(QDialog):
             "available": available_list,
             "selected": selected_list,
             "fetch_btn": fetch_btn,
+            "scenario_combo": scenario_combo,
         }
 
         self._populate_lists(p_id, p_name, p_defaults, available_list, selected_list)
@@ -247,7 +279,7 @@ class SettingsDialog(QDialog):
         self.token_budget.setValue(self.settings_manager.get_max_history_tokens())
         self.token_budget.setFixedWidth(100)
         self.token_budget.setToolTip(
-            "Maximum tokens of conversation history sent to the AI.\n"
+            "Maximum conversation-history tokens sent to the AI.\n"
             "Higher = more context but slower/costlier.\n"
             "Default: 24000 (~75% of a 32k window).")
         token_row.addWidget(self.token_budget)
@@ -255,7 +287,7 @@ class SettingsDialog(QDialog):
         agent_layout.addLayout(token_row)
 
         self.auto_approve_cb = QCheckBox(
-            "Auto-approve file writes (skip Accept/Reject dialog in Phased mode)")
+            "Auto-approve file writes (skip the Accept/Reject dialog in Phased mode)")
         self.auto_approve_cb.setChecked(self.settings_manager.get_auto_approve_writes())
         self.auto_approve_cb.setToolTip(
             "When disabled, the AI shows a diff and asks before writing files.")
@@ -263,29 +295,31 @@ class SettingsDialog(QDialog):
 
         self.auto_save_cb = QCheckBox("Auto-save conversations to .vox/conversation.json")
         self.auto_save_cb.setChecked(self.settings_manager.get_auto_save_conversation())
+        self.auto_save_cb.setToolTip("Keep the current chat transcript saved automatically in the project")
         agent_layout.addWidget(self.auto_save_cb)
 
-        self.web_search_cb = QCheckBox("Enable web search tool (requires internet)")
+        self.web_search_cb = QCheckBox("Enable the web-search tool (requires internet access)")
         self.web_search_cb.setChecked(self.settings_manager.get_web_search_enabled())
+        self.web_search_cb.setToolTip("Allow the agent to fetch information from the public web")
         agent_layout.addWidget(self.web_search_cb)
 
         agent_group.setLayout(agent_layout)
         layout.addWidget(agent_group)
 
         # ── RAG / Vector Engine ──
-        rag_group = QGroupBox("RAG / Vector Engine")
+        rag_group = QGroupBox("RAG / Retrieval")
         rag_layout = QVBoxLayout()
         rag_layout.setSpacing(8)
 
         self.rag_enabled = QCheckBox(
-            "Enable RAG (retrieve relevant code/files for the agent)")
+            "Enable RAG (retrieve relevant code and files for the agent)")
         self.rag_enabled.setChecked(self.settings_manager.get_rag_enabled())
         self.rag_enabled.setToolTip(
             "If enabled, the AI will search your project for code relevant to your query.")
         rag_layout.addWidget(self.rag_enabled)
 
         topk_row = QHBoxLayout()
-        topk_row.addWidget(QLabel("Top-K:"))
+        topk_row.addWidget(QLabel("Top-K chunks:"))
         self.rag_top_k = QSpinBox()
         self.rag_top_k.setRange(1, 50)
         self.rag_top_k.setValue(self.settings_manager.get_rag_top_k())
@@ -299,7 +333,7 @@ class SettingsDialog(QDialog):
         rag_layout.addLayout(topk_row)
 
         minscore_row = QHBoxLayout()
-        minscore_row.addWidget(QLabel("Min Score:"))
+        minscore_row.addWidget(QLabel("Minimum score:"))
         self.rag_min_score = QDoubleSpinBox()
         self.rag_min_score.setRange(0.0, 1.0)
         self.rag_min_score.setSingleStep(0.05)
@@ -362,7 +396,7 @@ class SettingsDialog(QDialog):
         local_group = QGroupBox("Local GGUF Models")
         local_layout = QVBoxLayout()
         local_layout.addWidget(
-            QLabel("Manage local .gguf models for offline inference:"))
+            QLabel("Manage local GGUF models for offline inference:"))
         self.model_mgr_btn = QPushButton("Open Model Manager…")
         self.model_mgr_btn.setStyleSheet(
             "background-color: #27272a; border: 1px solid #3f3f46; "
@@ -395,6 +429,24 @@ class SettingsDialog(QDialog):
         if c.isValid():
             line_edit.setText(c.name())
 
+    def _populate_test_provider_scenarios(self, combo, selected_path=None):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Choose a saved scenario…", "")
+        normalized = (selected_path or "").strip().replace("\\", "/")
+        selected_index = 0
+        for idx, item in enumerate(self.settings_manager.list_test_provider_scenarios(), start=1):
+            combo.addItem(item["label"], item["path"])
+            if item["path"] == normalized:
+                selected_index = idx
+        combo.setCurrentIndex(selected_index)
+        combo.blockSignals(False)
+
+    def _on_test_scenario_changed(self, combo, line_edit):
+        path = combo.currentData()
+        if path:
+            line_edit.setText(path)
+
     def _populate_lists(self, p_id, p_name, p_defaults, available_list, selected_list):
         available_list.clear()
         selected_list.clear()
@@ -424,6 +476,19 @@ class SettingsDialog(QDialog):
     def _fetch_models_for_provider(self, p_id):
         ui = self.provider_ui[p_id]
         key = ui["key_input"].text().strip()
+
+        if p_id == "test":
+            self.settings_manager.set_test_provider_script_path(key)
+            AIClient.clear_test_provider()
+            combo = ui.get("scenario_combo")
+            if combo is not None:
+                self._populate_test_provider_scenarios(combo, key)
+            QMessageBox.information(
+                self,
+                "Test Provider",
+                "The dev-only scripted provider is enabled. It will load steps from the configured script file if present, or fall back to the built-in deterministic smoke script.",
+            )
+            return
 
         if not key and p_id != "local":
             QMessageBox.warning(
@@ -508,6 +573,8 @@ class SettingsDialog(QDialog):
             input_val = self.provider_ui[p_id]["key_input"].text().strip()
             if p_id == "local":
                 self.settings_manager.set_local_llm_url(input_val)
+            elif p_id == "test":
+                self.settings_manager.set_test_provider_script_path(input_val)
             else:
                 self.settings_manager.set_api_key(p_key_name, input_val)
 
