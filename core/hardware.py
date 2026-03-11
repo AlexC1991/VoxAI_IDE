@@ -3,6 +3,8 @@ import psutil
 import ctypes
 import logging
 
+from core.agent_tools_base import get_resource_path
+
 log = logging.getLogger(__name__)
 
 def get_hardware_config(api_root=None):
@@ -25,8 +27,7 @@ def get_hardware_config(api_root=None):
     # 2. Backend Search Path
     # Default to current project's Vox_RIG/drivers subdir if not provided
     if not api_root:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        api_root = os.path.join(base_dir, "Vox_RIG", "drivers")
+        api_root = get_resource_path(os.path.join("Vox_RIG", "drivers"))
     
     api_root = os.path.abspath(api_root)
     log.info(f"Scanning for drivers in: {api_root}")

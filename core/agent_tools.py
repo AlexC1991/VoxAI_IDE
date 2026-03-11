@@ -1,4 +1,5 @@
 from core.agent_tools_base import (
+    get_executable_root,
     get_ide_root,
     get_project_root,
     get_resource_path,
@@ -129,6 +130,7 @@ class AgentToolHandler:
 
 __all__ = [
     'AgentToolHandler',
+    'get_executable_root',
     'get_ide_root',
     'get_project_root',
     'get_resource_path',

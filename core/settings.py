@@ -5,6 +5,8 @@ from glob import glob
 
 from PySide6.QtCore import QSettings
 
+from core.agent_tools_base import get_ide_root
+
 class SettingsManager:
     _instance = None
     _settings = None
@@ -41,7 +43,7 @@ class SettingsManager:
         import json
 
         # Determine path relative to this file (core/settings.py -> ../keys/secrets.json)
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_dir = get_ide_root()
         secrets_path = os.path.join(base_dir, "keys", "secrets.json")
 
         if os.path.exists(secrets_path):
@@ -89,7 +91,7 @@ class SettingsManager:
 
     @staticmethod
     def _repo_root():
-        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return get_ide_root()
 
     def is_test_provider_enabled(self) -> bool:
         env = os.getenv("VOXAI_ENABLE_TEST_PROVIDER", "")

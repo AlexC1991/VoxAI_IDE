@@ -22,7 +22,7 @@ from ui.file_switcher import FileSwitcher
 from ui.code_outline import CodeOutline
 from core.runner import Runner
 from core.ai_client import AIClient
-from core.agent_tools import set_project_root, get_resource_path
+from core.agent_tools import get_executable_root, set_project_root, get_resource_path
 from core.settings import SettingsManager
 from ui.main_window_status import (
     _apply_openrouter_health_indicator,
@@ -481,22 +481,35 @@ class CodingAgentIDE(QMainWindow):
         model = self.chat_panel._get_full_model_name()
         mode = self.chat_panel.mode_combo.currentText()
 
-        cli_script = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "cli", "terminal_mode.py")
-
-        if not os.path.exists(cli_script):
-            QMessageBox.warning(self, "Terminal Mode",
-                                "CLI module not found. Ensure cli/terminal_mode.py exists.")
-            return
-
-        args = [
-            sys.executable, cli_script,
-            "--project", project_root,
-            "--conversation", conv_file,
-            "--model", model,
-            "--mode", mode,
-        ]
+        if getattr(sys, "frozen", False):
+            cli_target = os.path.join(get_executable_root(), "VoxAI_Terminal.exe")
+            if not os.path.exists(cli_target):
+                QMessageBox.warning(
+                    self,
+                    "Terminal Mode",
+                    "Bundled terminal executable not found. Expected VoxAI_Terminal.exe next to the main app.",
+                )
+                return
+            args = [
+                cli_target,
+                "--project", project_root,
+                "--conversation", conv_file,
+                "--model", model,
+                "--mode", mode,
+            ]
+        else:
+            cli_target = get_resource_path(os.path.join("cli", "terminal_mode.py"))
+            if not os.path.exists(cli_target):
+                QMessageBox.warning(self, "Terminal Mode",
+                                    "CLI module not found. Ensure cli/terminal_mode.py exists.")
+                return
+            args = [
+                sys.executable, cli_target,
+                "--project", project_root,
+                "--conversation", conv_file,
+                "--model", model,
+                "--mode", mode,
+            ]
 
         # subprocess.Popen with CREATE_NEW_CONSOLE gives the child its own
         # interactive cmd window with real stdin/stdout — QProcess can't do this.

@@ -1,7 +1,14 @@
 import sys
+import os
 import traceback
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton, QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QStandardPaths
+
+
+def _crash_log_path() -> str:
+    base_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation) or os.getcwd()
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, "crash.log")
 
 class CrashReporter(QDialog):
     def __init__(self, exc_type, exc_value, exc_traceback):
@@ -36,7 +43,7 @@ class CrashReporter(QDialog):
         
         # Log to file automatically
         try:
-            with open("crash.log", "w", encoding="utf-8") as f:
+            with open(_crash_log_path(), "w", encoding="utf-8") as f:
                 f.write(error_msg)
         except Exception:
             pass

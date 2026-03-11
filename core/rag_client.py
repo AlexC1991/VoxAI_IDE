@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import requests as _requests
 
+from core.agent_tools_base import get_resource_path
 from core.settings import SettingsManager
 from core.ai_client import AIClient
 
@@ -49,8 +50,8 @@ class RAGClient:
         self.settings = SettingsManager()
         self.ai = AIClient()
 
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.go_dir = os.path.join(self.base_dir, "Vox_RIG", "search_engine")
+        self.base_dir = get_resource_path("")
+        self.go_dir = get_resource_path(os.path.join("Vox_RIG", "search_engine"))
 
         self.binary_path = os.path.join(self.go_dir, "vox-vector-engine.exe")
         self.use_binary = os.path.exists(self.binary_path)

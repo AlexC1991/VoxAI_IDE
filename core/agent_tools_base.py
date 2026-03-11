@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 
 log = logging.getLogger(__name__)
@@ -15,7 +16,16 @@ def set_project_root(path):
 
 
 def get_ide_root():
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return os.path.realpath(bundle_root)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_executable_root():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.realpath(sys.executable))
+    return get_ide_root()
 
 
 def get_resource_path(relative_path):

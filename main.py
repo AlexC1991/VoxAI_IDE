@@ -1,10 +1,18 @@
 
+import os
 import sys
 import traceback
 from ui.main_window import CodingAgentIDE
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QStandardPaths
 
 from ui.crash_reporter import show_crash_dialog
+
+
+def _app_log_path(filename: str) -> str:
+    base_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation) or os.getcwd()
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, filename)
 
 # Ensure stdout/stderr handle UTF-8 (important for emojis on Windows)
 if sys.stdout.encoding != 'utf-8':
@@ -37,7 +45,7 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("debug.log", mode='w', encoding='utf-8')
+        logging.FileHandler(_app_log_path("debug.log"), mode='w', encoding='utf-8')
     ]
 )
 
