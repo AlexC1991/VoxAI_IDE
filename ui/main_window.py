@@ -5,11 +5,10 @@ import subprocess
 import logging
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout,
-    QPushButton, QFileDialog, QMessageBox,
-    QSystemTrayIcon, QStatusBar,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QDialog,
+    QPushButton, QFileDialog, QMessageBox, QLabel,
+    QSystemTrayIcon,
 )
-from PySide6.QtCore import Qt, QTimer, QObject, QThread, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 
 from ui.chat_panel import ChatPanel
@@ -18,91 +17,42 @@ from ui.file_tree_panel import FileTreePanel
 from ui.debug_drawer import DebugDrawer
 from ui.search_panel import SearchPanel
 from ui.history_sidebar import HistorySidebar
+from ui.project_tracker_panel import ProjectTrackerPanel
 from ui.file_switcher import FileSwitcher
 from ui.code_outline import CodeOutline
 from core.runner import Runner
 from core.ai_client import AIClient
 from core.agent_tools import set_project_root, get_resource_path
+from core.settings import SettingsManager
+from ui.main_window_status import (
+    _apply_openrouter_health_indicator,
+    _clear_openrouter_health_refresh_refs,
+    _handle_openrouter_health_refresh,
+    _openrouter_health_indicator_style,
+    _queue_openrouter_health_refresh,
+    _refresh_branch,
+    _setup_openrouter_health_refresh,
+    _setup_status_bar,
+    _should_run_openrouter_health_refresh,
+    update_token_count,
+)
+from ui.main_window_support import ABOUT_TEXT, CommandPalette, OpenRouterHealthWorker, _GLOBAL_STYLE, _
 
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Command Palette
-# ---------------------------------------------------------------------------
-class CommandPalette(QDialog):
-    """Ctrl+Shift+P quick-action launcher."""
-
-    def __init__(self, commands: list, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Command Palette")
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-        self.setFixedSize(500, 340)
-        self.setStyleSheet(
-            "QDialog { background: #1e1e1e; border: 1px solid #00f3ff; "
-            "border-radius: 8px; }")
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(4)
-
-        self._input = QLineEdit()
-        self._input.setPlaceholderText("Type a command…")
-        self._input.setStyleSheet(
-            "background: #27272a; color: #e4e4e7; border: 1px solid #3f3f46; "
-            "border-radius: 4px; padding: 8px; font-size: 13px; "
-            "font-family: 'Consolas', monospace;")
-        self._input.textChanged.connect(self._filter)
-        lay.addWidget(self._input)
-
-        self._list = QListWidget()
-        self._list.setStyleSheet(
-            "QListWidget { background: #18181b; border: none; color: #e4e4e7; "
-            "font-family: 'Consolas', monospace; font-size: 12px; }"
-            "QListWidget::item { padding: 8px; border-radius: 4px; }"
-            "QListWidget::item:selected { background: #27272a; color: #00f3ff; }"
-            "QListWidget::item:hover { background: #232326; }")
-        self._list.itemActivated.connect(self._run)
-        lay.addWidget(self._list)
-
-        self._commands = commands
-        for name, _ in commands:
-            self._list.addItem(name)
-
-        self._input.setFocus()
-
-    def _filter(self, text):
-        text_lower = text.lower()
-        self._list.clear()
-        for name, _ in self._commands:
-            if text_lower in name.lower():
-                self._list.addItem(name)
-
-    def _run(self, item: QListWidgetItem):
-        text = item.text()
-        for name, fn in self._commands:
-            if name == text:
-                self.accept()
-                fn()
-                return
-
-
-# ---------------------------------------------------------------------------
-# Main Window
-# ---------------------------------------------------------------------------
-class OpenRouterHealthWorker(QObject):
-    finished = Signal(dict)
-
-    def run(self):
-        try:
-            summary = AIClient.refresh_openrouter_health()
-        except Exception as e:
-            log.error("OpenRouter background health refresh failed: %s", e)
-            summary = {"error": str(e), "skipped_reason": "exception"}
-        self.finished.emit(summary)
-
-
 class CodingAgentIDE(QMainWindow):
+    _setup_status_bar = _setup_status_bar
+    _refresh_branch = _refresh_branch
+    update_token_count = update_token_count
+    _openrouter_health_indicator_style = staticmethod(_openrouter_health_indicator_style)
+    _apply_openrouter_health_indicator = _apply_openrouter_health_indicator
+    _setup_openrouter_health_refresh = _setup_openrouter_health_refresh
+    _should_run_openrouter_health_refresh = _should_run_openrouter_health_refresh
+    _queue_openrouter_health_refresh = _queue_openrouter_health_refresh
+    _handle_openrouter_health_refresh = _handle_openrouter_health_refresh
+    _clear_openrouter_health_refresh_refs = _clear_openrouter_health_refresh_refs
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VoxAI Coding Agent IDE")
@@ -192,6 +142,11 @@ class CodingAgentIDE(QMainWindow):
             self.chat_panel.clear_context)
         self.chat_panel.conversation_changed.connect(self._refresh_history)
 
+        self.project_tracker_panel = ProjectTrackerPanel(self)
+        self.project_tracker_panel.change_open_requested.connect(self._open_project_tracker_change)
+        self.chat_panel.project_tracker_changed.connect(self._refresh_project_tracker)
+        self.chat_panel.conversation_changed.connect(self._refresh_project_tracker)
+
         # ── Slim icon bar (replaces old toolbar) ──
         self._create_icon_bar()
         main_layout.addWidget(self._icon_bar)
@@ -200,8 +155,13 @@ class CodingAgentIDE(QMainWindow):
         self.main_splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(self.main_splitter)
 
-        # Left pane: history sidebar (hidden by default)
-        self.main_splitter.addWidget(self.history_sidebar)
+        # Left pane: project tracker + history
+        self.left_sidebar_splitter = QSplitter(Qt.Vertical)
+        self.left_sidebar_splitter.setChildrenCollapsible(False)
+        self.left_sidebar_splitter.addWidget(self.project_tracker_panel)
+        self.left_sidebar_splitter.addWidget(self.history_sidebar)
+        self.left_sidebar_splitter.setSizes([420, 0])
+        self.main_splitter.addWidget(self.left_sidebar_splitter)
 
         # Centre: chat panel (dominant)
         self.main_splitter.addWidget(self.chat_panel)
@@ -220,8 +180,10 @@ class CodingAgentIDE(QMainWindow):
 
         self.main_splitter.addWidget(self.right_splitter)
 
-        # Default sizes: history hidden, chat ~60%, right panels ~40%
-        self.main_splitter.setSizes([0, 700, 500])
+        # Default sizes: tracker visible, chat dominant, right panels available
+        self.main_splitter.setSizes([320, 700, 500])
+        self._refresh_project_tracker()
+        self._sync_left_sidebar_layout(force_open=True)
 
         # Status bar
         self._setup_status_bar()
@@ -236,6 +198,8 @@ class CodingAgentIDE(QMainWindow):
             self._toggle_debug_drawer)
         QShortcut(QKeySequence("Ctrl+Shift+F"), self).activated.connect(
             self._toggle_search_panel)
+        QShortcut(QKeySequence("Ctrl+Shift+T"), self).activated.connect(
+            self._toggle_project_tracker)
         QShortcut(QKeySequence("Ctrl+H"), self).activated.connect(
             self._toggle_history_sidebar)
         QShortcut(QKeySequence("Ctrl+P"), self).activated.connect(
@@ -262,81 +226,6 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     # Status bar
     # ------------------------------------------------------------------
-    def _setup_status_bar(self):
-        sb = QStatusBar()
-        sb.setStyleSheet(
-            "QStatusBar { background: #0e0e10; color: #71717a; "
-            "border-top: 1px solid #1e1e21; font-family: 'Consolas', monospace; "
-            "font-size: 11px; padding: 0 4px; }"
-            "QStatusBar::item { border: none; }")
-        self.setStatusBar(sb)
-
-        self._status_branch = QLabel("Branch: —")
-        self._status_branch.setStyleSheet(
-            "color: #71717a; padding: 0 10px; font-size: 11px;")
-        self._status_branch.setToolTip("Current git branch for the open project")
-        sb.addWidget(self._status_branch)
-
-        self._status_cursor = QLabel("Ln 1, Col 1")
-        self._status_cursor.setStyleSheet(
-            "color: #71717a; padding: 0 10px; font-size: 11px;")
-        self._status_cursor.setToolTip("Cursor position in the active editor")
-        sb.addPermanentWidget(self._status_cursor)
-
-        self._status_encoding = QLabel("UTF-8")
-        self._status_encoding.setStyleSheet(
-            "color: #52525b; padding: 0 10px; font-size: 11px;")
-        self._status_encoding.setToolTip("Encoding for the active file")
-        sb.addPermanentWidget(self._status_encoding)
-
-        self._status_openrouter = QLabel("OpenRouter: inactive")
-        self._status_openrouter.setToolTip("Recommended OpenRouter model based on recent health checks")
-        sb.addPermanentWidget(self._status_openrouter)
-        self._apply_openrouter_health_indicator({
-            "status": "inactive",
-            "message": "OpenRouter: inactive",
-        })
-
-        from PySide6.QtWidgets import QProgressBar
-        self._token_bar = QProgressBar()
-        self._token_bar.setFixedWidth(100)
-        self._token_bar.setFixedHeight(10)
-        self._token_bar.setRange(0, 100)
-        self._token_bar.setValue(0)
-        self._token_bar.setFormat("")
-        self._token_bar.setStyleSheet(
-            "QProgressBar { background: #1e1e21; border: none; border-radius: 5px; }"
-            "QProgressBar::chunk { background: #00f3ff; border-radius: 5px; }")
-        sb.addPermanentWidget(self._token_bar)
-
-        self._status_tokens = QLabel("0 / 24K tokens")
-        self._status_tokens.setStyleSheet(
-            "color: #52525b; padding: 0 8px; font-size: 11px;")
-        self._status_tokens.setToolTip("Conversation history currently being sent to the model")
-        sb.addPermanentWidget(self._status_tokens)
-
-        # Periodic git branch refresh
-        self._branch_timer = QTimer(self)
-        self._branch_timer.timeout.connect(self._refresh_branch)
-        self._branch_timer.start(5000)
-
-        # Cursor position tracking
-        self._cursor_timer = QTimer(self)
-        self._cursor_timer.timeout.connect(self._refresh_cursor_pos)
-        self._cursor_timer.start(200)
-
-    def _refresh_branch(self):
-        if not self.project_path:
-            return
-        try:
-            r = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=self.project_path, capture_output=True, text=True, timeout=3)
-            if r.returncode == 0:
-                self._status_branch.setText(f"Branch: {r.stdout.strip()}")
-        except Exception:
-            pass
-
     def _refresh_cursor_pos(self):
         editor = self.editor_panel.tabs.currentWidget()
         if editor and hasattr(editor, 'textCursor'):
@@ -344,117 +233,6 @@ class CodingAgentIDE(QMainWindow):
             line = cursor.blockNumber() + 1
             col = cursor.columnNumber() + 1
             self._status_cursor.setText(f"Ln {line}, Col {col}")
-
-    def update_token_count(self, count: int):
-        max_tok = self.settings_manager.get_max_history_tokens()
-        pct = min(100, int(count / max(max_tok, 1) * 100))
-        self._token_bar.setValue(pct)
-
-        if pct < 50:
-            color = "#00f3ff"
-        elif pct < 80:
-            color = "#e5c07b"
-        else:
-            color = "#ef4444"
-        self._token_bar.setStyleSheet(
-            f"QProgressBar {{ background: #27272a; border: 1px solid #3f3f46; border-radius: 3px; }}"
-            f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}")
-
-        if count >= 1000:
-            disp = f"{count/1000:.1f}K"
-        else:
-            disp = str(count)
-        max_disp = f"{max_tok/1000:.0f}K"
-        self._status_tokens.setText(f"{disp} / {max_disp} tokens")
-        self._status_tokens.setStyleSheet(f"color: {color}; padding: 0 8px; font-size: 11px;")
-
-    @staticmethod
-    def _openrouter_health_indicator_style(status: str) -> str:
-        color = {
-            "healthy": "#10b981",
-            "rate_limited": "#f59e0b",
-            "policy_blocked": "#ef4444",
-            "request_failed": "#fb7185",
-            "inactive": "#52525b",
-            "unknown": "#60a5fa",
-        }.get(status or "unknown", "#60a5fa")
-        return f"color: {color}; padding: 0 10px; font-size: 11px;"
-
-    def _apply_openrouter_health_indicator(self, indicator: dict | None = None):
-        indicator = indicator or AIClient.get_openrouter_health_indicator(self.settings_manager)
-        label = getattr(self, '_status_openrouter', None)
-        if label is None:
-            return
-        message = indicator.get("message") or "OpenRouter: inactive"
-        status = indicator.get("status") or "inactive"
-        label.setText(message)
-        label.setStyleSheet(self._openrouter_health_indicator_style(status))
-        tooltip = indicator.get("recommended_full_model") or message
-        label.setToolTip(tooltip)
-
-    # ------------------------------------------------------------------
-    # Background OpenRouter health refresh
-    # ------------------------------------------------------------------
-    def _setup_openrouter_health_refresh(self):
-        if not hasattr(self, '_openrouter_health_timer') or self._openrouter_health_timer is None:
-            self._openrouter_health_timer = QTimer(self)
-            self._openrouter_health_timer.timeout.connect(self._queue_openrouter_health_refresh)
-        else:
-            self._openrouter_health_timer.stop()
-        self._openrouter_health_timer.start(AIClient.OPENROUTER_BACKGROUND_REFRESH_INTERVAL_SECONDS * 1000)
-        self._apply_openrouter_health_indicator()
-        QTimer.singleShot(15000, self._queue_openrouter_health_refresh)
-
-    def _should_run_openrouter_health_refresh(self) -> bool:
-        if self._openrouter_health_inflight:
-            return False
-        if self._terminal_proc is not None:
-            return False
-        if getattr(self.chat_panel, 'is_processing', False):
-            return False
-        return AIClient.should_background_refresh(self.settings_manager)
-
-    def _queue_openrouter_health_refresh(self):
-        if not self._should_run_openrouter_health_refresh():
-            return
-
-        self._openrouter_health_inflight = True
-        self._openrouter_health_thread = QThread()
-        self._openrouter_health_worker = OpenRouterHealthWorker()
-        self._openrouter_health_worker.moveToThread(self._openrouter_health_thread)
-
-        self._openrouter_health_thread.started.connect(self._openrouter_health_worker.run)
-        self._openrouter_health_worker.finished.connect(self._handle_openrouter_health_refresh)
-        self._openrouter_health_worker.finished.connect(self._openrouter_health_thread.quit)
-        self._openrouter_health_worker.finished.connect(self._openrouter_health_worker.deleteLater)
-        self._openrouter_health_thread.finished.connect(self._openrouter_health_thread.deleteLater)
-        self._openrouter_health_thread.finished.connect(self._clear_openrouter_health_refresh_refs)
-        self._openrouter_health_thread.start()
-
-    def _handle_openrouter_health_refresh(self, summary: dict):
-        if summary.get("error"):
-            return
-
-        log.info(
-            "OpenRouter background health refresh | probed=%s recommended=%s skipped=%s",
-            summary.get("probed_models", []),
-            summary.get("recommended_model"),
-            summary.get("skipped_reason"),
-        )
-
-        before = (self.settings_manager.get_selected_model() or "").strip()
-        selected, note = AIClient.auto_select_openrouter_model(self.settings_manager, run_probe=False)
-        if selected and selected != before:
-            self.chat_panel.refresh_models()
-            if note and note != self._openrouter_health_last_note and self.statusBar():
-                self.statusBar().showMessage(note, 7000)
-                self._openrouter_health_last_note = note
-        self._apply_openrouter_health_indicator()
-
-    def _clear_openrouter_health_refresh_refs(self):
-        self._openrouter_health_worker = None
-        self._openrouter_health_thread = None
-        self._openrouter_health_inflight = False
 
     # ------------------------------------------------------------------
     # Command Palette
@@ -519,18 +297,63 @@ class CodingAgentIDE(QMainWindow):
     # ------------------------------------------------------------------
     def _toggle_history_sidebar(self):
         self.history_sidebar.toggle()
-        self._ib_history.setChecked(self.history_sidebar.isVisible())
+        self._sync_left_sidebar_layout(force_open=self.history_sidebar.isVisible())
         if self.history_sidebar.isVisible():
-            sizes = self.main_splitter.sizes()
-            if sizes[0] < 120:
-                sizes[0] = 220
-                sizes[1] = max(sizes[1] - 220, 300)
-                self.main_splitter.setSizes(sizes)
             self._refresh_history()
 
     def _refresh_history(self):
         convos = self.chat_panel.list_conversations()
         self.history_sidebar.refresh(convos, self.chat_panel.conversation_id)
+
+    def _toggle_project_tracker(self):
+        self.project_tracker_panel.setVisible(not self.project_tracker_panel.isVisible())
+        self._sync_left_sidebar_layout(force_open=self.project_tracker_panel.isVisible())
+
+    def _sync_left_sidebar_layout(self, force_open: bool = False):
+        tracker_visible = self.project_tracker_panel.isVisible()
+        history_visible = self.history_sidebar.isVisible()
+        left_visible = tracker_visible or history_visible
+
+        if hasattr(self, '_ib_tracker'):
+            self._ib_tracker.setChecked(tracker_visible)
+        if hasattr(self, '_ib_history'):
+            self._ib_history.setChecked(history_visible)
+
+        self.left_sidebar_splitter.setVisible(left_visible)
+        if not left_visible:
+            sizes = self.main_splitter.sizes()
+            if len(sizes) >= 3 and sizes[0] > 0:
+                self.main_splitter.setSizes([0, sizes[1] + sizes[0], sizes[2]])
+            return
+
+        if tracker_visible and history_visible:
+            self.left_sidebar_splitter.setSizes([420, 220])
+        elif tracker_visible:
+            self.left_sidebar_splitter.setSizes([1, 0])
+        else:
+            self.left_sidebar_splitter.setSizes([0, 1])
+
+        sizes = self.main_splitter.sizes()
+        if len(sizes) >= 3 and (force_open or sizes[0] < 180):
+            total = sum(sizes) or 1520
+            left_width = min(max(int(total * 0.22), 280), 360)
+            right_width = max(sizes[2], 280)
+            chat_width = max(total - left_width - right_width, 320)
+            self.main_splitter.setSizes([left_width, chat_width, right_width])
+
+    def _refresh_project_tracker(self):
+        self.project_tracker_panel.update_state(self.chat_panel.project_tracker_state())
+
+    def _open_project_tracker_change(self, file_path: str, diff_text: str):
+        resolved_path = str(file_path or "")
+        if resolved_path and not os.path.isabs(resolved_path):
+            resolved_path = os.path.join(self.project_path or os.getcwd(), resolved_path)
+        if resolved_path and os.path.exists(resolved_path):
+            if not self.editor_panel.reload_open_file(resolved_path, highlight=True):
+                self.editor_panel.load_file(resolved_path)
+        if diff_text and diff_text.strip():
+            self.editor_panel.show_diff(resolved_path or file_path or "Session Change", diff_text, activate=True)
+        self._ensure_editor_visible_for_diff()
 
     # ------------------------------------------------------------------
     # Code outline
@@ -921,13 +744,16 @@ class CodingAgentIDE(QMainWindow):
         self._ib_files = _icon_btn("📁", "Toggle Files  (Ctrl+B)", self._toggle_file_tree, True)
         self._ib_editor = _icon_btn("📝", "Toggle Editor", self._toggle_editor, True)
         self._ib_search = _icon_btn("🔍", "Search  (Ctrl+Shift+F)", self._toggle_search_panel, True)
+        self._ib_tracker = _icon_btn("📋", "Project Tracker  (Ctrl+Shift+T)", self._toggle_project_tracker, True)
         self._ib_outline = _icon_btn("🧭", "Code Outline  (Ctrl+Shift+L)", self._toggle_code_outline, True)
         self._ib_history = _icon_btn("💬", "History  (Ctrl+H)", self._toggle_history_sidebar, True)
         self._ib_terminal = _icon_btn("⌨", "Terminal Mode", self._enter_terminal_mode)
         self._ib_run = _icon_btn("▶", "Run Script", self.select_and_run_script)
         self._ib_settings = _icon_btn("⚙", "Settings  (Ctrl+,)", self.open_settings)
 
-        for b in (self._ib_files, self._ib_editor, self._ib_search,
+        self._ib_tracker.setChecked(True)
+
+        for b in (self._ib_files, self._ib_editor, self._ib_search, self._ib_tracker,
                   self._ib_outline, self._ib_history):
             lay.addWidget(b)
 
@@ -1047,6 +873,8 @@ class CodingAgentIDE(QMainWindow):
                             QKeySequence("Ctrl+`"))
         view_menu.addAction("Search in Project", self._toggle_search_panel,
                             QKeySequence("Ctrl+Shift+F"))
+        view_menu.addAction("Project Tracker", self._toggle_project_tracker,
+                            QKeySequence("Ctrl+Shift+T"))
         view_menu.addAction("Conversation History", self._toggle_history_sidebar,
                             QKeySequence("Ctrl+H"))
         view_menu.addSeparator()
@@ -1065,10 +893,42 @@ class CodingAgentIDE(QMainWindow):
         help_menu.addAction("About", self.show_about)
 
     def closeEvent(self, event):
+        self._shutdown_background_work()
         if hasattr(self, '_tray'):
             self._tray.hide()
         self._kill_terminal()
         super().closeEvent(event)
+
+    def _shutdown_background_work(self):
+        chat_panel = getattr(self, 'chat_panel', None)
+        if chat_panel is not None:
+            shutdown = getattr(chat_panel, '_shutdown_background_threads', None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except Exception:
+                    log.exception("Failed to shut down chat panel background threads")
+        timer = getattr(self, '_openrouter_health_timer', None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                log.exception("Failed to stop OpenRouter health timer")
+        thread = getattr(self, '_openrouter_health_thread', None)
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(5000):
+                        log.warning("Timed out waiting for OpenRouter health thread shutdown")
+            except Exception:
+                log.exception("Failed to shut down OpenRouter health thread")
+        clear_refs = getattr(self, '_clear_openrouter_health_refresh_refs', None)
+        if callable(clear_refs):
+            try:
+                clear_refs()
+            except Exception:
+                log.exception("Failed to clear OpenRouter health refresh refs")
 
     # ------------------------------------------------------------------
     # Menu actions
@@ -1133,103 +993,3 @@ class CodingAgentIDE(QMainWindow):
 
     def handle_chat_message(self, message: str):
         pass
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-ABOUT_TEXT = (
-    "<h3>VoxAI Coding Agent IDE</h3>"
-    "<p><b>Version:</b> 2.0 Agentic</p><hr>"
-    "<h4>Local Models (GGUF)</h4>"
-    "<p>Place <code>.gguf</code> files in <code>/models/llm/</code> and "
-    "they appear in Model Selection automatically.</p>"
-    "<h4>Providers</h4>"
-    "<p>OpenAI, Anthropic, Google, OpenRouter, DeepSeek, and more.</p>"
-    "<h4>Terminal Mode</h4>"
-    "<p>Click the <b>⌨</b> icon in the top bar (or use the command palette) "
-    "to switch to a Claude Code-style CLI. The IDE minimizes to tray.</p><hr>"
-    "<p><i>Built for the Vibe-Coder.</i></p>"
-)
-
-_ = lambda x: x  # no-op translation stub
-
-_GLOBAL_STYLE = """
-    QMainWindow { background-color: #111113; color: #e4e4e7; }
-    QWidget {
-        font-family: 'Segoe UI', 'Inter', sans-serif;
-        font-size: 13px; color: #e4e4e7;
-    }
-
-    /* ── Scrollbars (slim & subtle) ── */
-    QScrollBar:vertical {
-        border: none; background: transparent; width: 8px; margin: 0;
-    }
-    QScrollBar::handle:vertical {
-        background: #3f3f46; min-height: 24px; border-radius: 4px;
-    }
-    QScrollBar::handle:vertical:hover { background: #52525b; }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-    QScrollBar:horizontal {
-        border: none; background: transparent; height: 8px; margin: 0;
-    }
-    QScrollBar::handle:horizontal {
-        background: #3f3f46; min-width: 24px; border-radius: 4px;
-    }
-    QScrollBar::handle:horizontal:hover { background: #52525b; }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-
-    /* ── Splitters (tight 2px handles) ── */
-    QSplitter::handle { background: #27272a; }
-    QSplitter::handle:horizontal { width: 2px; }
-    QSplitter::handle:vertical { height: 2px; }
-    QSplitter::handle:hover { background: #3f3f46; }
-    QSplitter::handle:pressed { background: #00f3ff; }
-
-    /* ── Tooltips ── */
-    QToolTip {
-        background: #1e1e21; color: #e4e4e7;
-        border: 1px solid #3f3f46; padding: 5px 8px; border-radius: 6px;
-        font-size: 12px;
-    }
-
-    /* ── Menu bar ── */
-    QMenuBar {
-        background: #111113; color: #a1a1aa;
-        border-bottom: 1px solid #1e1e21; font-size: 12px;
-    }
-    QMenuBar::item { background: transparent; padding: 6px 10px; border-radius: 4px; }
-    QMenuBar::item:selected { background: #1e1e21; color: #e4e4e7; }
-
-    /* ── Menus ── */
-    QMenu {
-        background: #1e1e21; border: 1px solid #27272a;
-        border-radius: 8px; padding: 4px;
-    }
-    QMenu::item {
-        padding: 6px 28px 6px 12px; border-radius: 4px; color: #a1a1aa;
-    }
-    QMenu::item:selected { background: #27272a; color: #e4e4e7; }
-    QMenu::separator { height: 1px; background: #27272a; margin: 4px 8px; }
-
-    /* ── Tree / List views ── */
-    QTreeView, QListView {
-        background: #141416; border: none; outline: none;
-    }
-    QTreeView::item, QListView::item {
-        padding: 5px 8px; border-radius: 4px;
-    }
-    QTreeView::item:hover, QListView::item:hover { background: #1e1e21; }
-    QTreeView::item:selected, QListView::item:selected {
-        background: #1a1a2e; color: #00f3ff;
-    }
-
-    /* ── Tab widgets ── */
-    QTabWidget::pane { border: none; background: #141416; }
-    QTabBar::tab {
-        background: #1e1e21; color: #71717a; border: none;
-        padding: 6px 14px; border-radius: 6px 6px 0 0; margin-right: 2px;
-    }
-    QTabBar::tab:selected { background: #141416; color: #e4e4e7; }
-    QTabBar::tab:hover { color: #a1a1aa; }
-"""

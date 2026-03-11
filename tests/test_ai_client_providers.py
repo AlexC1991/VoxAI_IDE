@@ -16,6 +16,7 @@ class TestAIClient(unittest.TestCase):
         # Mock SettingsManager to return specific models/keys
         self.settings_mock = MagicMock()
         self.settings_mock.get_api_key.return_value = "dummy_key"
+        self.settings_mock.get_show_unstable_models.return_value = False
         self.settings_mock.get_local_llm_url.return_value = "http://localhost:11434/v1"
         self.settings_mock.get_enabled_models.return_value = list(SettingsManager.DEFAULT_OPENROUTER_MODELS)
         self.selected_model = None
@@ -76,6 +77,67 @@ class TestAIClient(unittest.TestCase):
         self.assertEqual(client.provider, "google")
         self.assertEqual(client.model, "gemini-pro")
         self.assertEqual(client._get_url(), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+
+    def test_google_transient_503_retries_and_recovers(self):
+        self.settings_mock.get_selected_model.return_value = "[Google Gemini] gemini-pro"
+        client = AIClient()
+
+        first_response = MagicMock()
+        first_response.status_code = 503
+        first_response.text = '{"error": {"message": "The model is overloaded due to high demand. Please try again later."}}'
+        first_error = requests.exceptions.HTTPError("503 Server Error: Service Unavailable")
+        first_error.response = first_response
+        first_response.raise_for_status.side_effect = first_error
+
+        second_response = MagicMock()
+        second_response.raise_for_status.return_value = None
+        second_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Recovered reply"}}]}',
+            b'data: [DONE]',
+        ]
+
+        first_ctx = MagicMock()
+        first_ctx.__enter__.return_value = first_response
+        first_ctx.__exit__.return_value = False
+        second_ctx = MagicMock()
+        second_ctx.__enter__.return_value = second_response
+        second_ctx.__exit__.return_value = False
+
+        with patch('core.ai_client.requests.post', side_effect=[first_ctx, second_ctx]) as mock_post, \
+             patch('core.ai_client.time.sleep') as mock_sleep:
+            chunks = list(client.stream_chat([{"role": "user", "content": "Say hello"}]))
+
+        self.assertEqual("".join(chunks), "Recovered reply")
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(1.0)
+
+    def test_quarantined_model_routes_are_blocked_by_availability_checks(self):
+        info = AIClient.get_model_availability("[Google Gemini] gemini-pro-latest", self.settings_mock)
+        self.assertEqual(info["status"], "quarantined")
+        self.assertFalse(info["send_allowed"])
+        self.assertFalse(info["visible_by_default"])
+
+    def test_prepare_model_for_request_switches_away_from_quarantined_route(self):
+        self.settings_mock.get_enabled_models.return_value = [
+            "[Google Gemini] gemini-pro-latest",
+            SettingsManager.DEFAULT_BENCHMARK_MODEL,
+        ]
+
+        plan = AIClient.prepare_model_for_request("[Google Gemini] gemini-pro-latest", self.settings_mock, run_probe=False)
+
+        self.assertEqual(plan["effective_model"], SettingsManager.DEFAULT_BENCHMARK_MODEL)
+        self.assertIsNone(plan["blocked_reason"])
+        self.assertIn("Switched", plan["note"])
+        self.settings_mock.set_selected_model.assert_called_with(SettingsManager.DEFAULT_BENCHMARK_MODEL)
+
+    def test_missing_api_key_models_are_hidden_by_default(self):
+        self.settings_mock.get_api_key.side_effect = lambda provider: "" if provider == "anthropic" else "dummy_key"
+
+        info = AIClient.get_model_picker_entry("[Anthropic] claude-3", self.settings_mock)
+
+        self.assertEqual(info["status"], "missing_api_key")
+        self.assertFalse(info["show_in_picker"])
+        self.assertIn("🔑", info["label"])
 
     def test_openrouter_ui_format(self):
         # This mirrors the user's screenshot case

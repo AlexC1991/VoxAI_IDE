@@ -26,6 +26,12 @@ env/
 crash.log
 debug.log
 
+# ===== Generated benchmark / scratch artifacts =====
+artifacts/benchmarks/
+tmp_*.json
+tmp_*.md
+tmp_debug_blank_project/
+
 # ===== VoxAI runtime data =====
 .vox/
 storage/

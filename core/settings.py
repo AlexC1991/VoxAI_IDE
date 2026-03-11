@@ -8,7 +8,9 @@ from PySide6.QtCore import QSettings
 class SettingsManager:
     _instance = None
     _settings = None
+    DEFAULT_BENCHMARK_MODEL = "[OpenRouter] x-ai/grok-code-fast-1"
     DEFAULT_OPENROUTER_MODELS = [
+        DEFAULT_BENCHMARK_MODEL,
         "[OpenRouter] qwen/qwen3-coder:free",
         "[OpenRouter] z-ai/glm-4.5-air:free",
         "[OpenRouter] google/gemma-3-4b-it:free",
@@ -172,10 +174,19 @@ class SettingsManager:
         self.settings.setValue("rag/min_score", max(0.0, s))
 
     def get_selected_model(self):
-        return self.settings.value("models/selected", "openai/gpt-4o")
+        return self.settings.value("models/selected", self.DEFAULT_BENCHMARK_MODEL)
 
     def set_selected_model(self, model):
         self.settings.setValue("models/selected", model)
+
+    def get_show_unstable_models(self) -> bool:
+        val = self.settings.value("models/show_unstable", False)
+        if isinstance(val, bool):
+            return val
+        return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+    def set_show_unstable_models(self, enabled: bool):
+        self.settings.setValue("models/show_unstable", bool(enabled))
 
     def get_openrouter_health_state(self) -> dict:
         raw = self.settings.value("openrouter/health_state", "{}")
@@ -313,8 +324,17 @@ class SettingsManager:
     def set_auto_save_conversation(self, enabled: bool):
         self.settings.setValue("agent/auto_save_conversation", bool(enabled))
 
+    def get_advanced_agent_tools_enabled(self) -> bool:
+        val = self.settings.value("agent/advanced_tools_enabled", False)
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("1", "true", "yes", "on")
+
+    def set_advanced_agent_tools_enabled(self, enabled: bool):
+        self.settings.setValue("agent/advanced_tools_enabled", bool(enabled))
+
     def get_web_search_enabled(self) -> bool:
-        val = self.settings.value("agent/web_search_enabled", True)
+        val = self.settings.value("agent/web_search_enabled", False)
         if isinstance(val, bool):
             return val
         return str(val).lower() in ("1", "true", "yes", "on")

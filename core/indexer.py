@@ -98,7 +98,12 @@ class ProjectIndexer:
     # ------------------------------------------------------------------
     # Main index
     # ------------------------------------------------------------------
-    def index_project(self, root_path: str, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> bool:
+    def index_project(
+        self,
+        root_path: str,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         root_path = resolve_path(root_path)
         log.info("Starting project index for: %s", root_path)
 
@@ -106,6 +111,9 @@ class ProjectIndexer:
 
         files_to_index = []
         for root, dirs, files in os.walk(root_path):
+            if cancel_callback and cancel_callback():
+                log.info("Indexing cancelled while scanning project files.")
+                return False
             dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
             for f in files:
                 full_path = os.path.join(root, f)
@@ -120,6 +128,9 @@ class ProjectIndexer:
         # Filter to only changed files
         changed_files = []
         for fpath in files_to_index:
+            if cancel_callback and cancel_callback():
+                log.info("Indexing cancelled while checking changed files.")
+                return False
             rel = os.path.relpath(fpath, root_path)
             h = self._file_hash(fpath)
             if h and manifest.get(rel) == h:
@@ -137,6 +148,10 @@ class ProjectIndexer:
 
         processed = 0
         for fpath, rel_path, fhash in changed_files:
+            if cancel_callback and cancel_callback():
+                log.info("Indexing cancelled after %d file(s).", processed)
+                self._save_manifest(root_path, manifest)
+                return False
             try:
                 with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
@@ -144,6 +159,10 @@ class ProjectIndexer:
                 chunks = self._chunk_content(content)
                 any_ok = False
                 for chunk_text, start, end in chunks:
+                    if cancel_callback and cancel_callback():
+                        log.info("Indexing cancelled while ingesting %s.", rel_path)
+                        self._save_manifest(root_path, manifest)
+                        return False
                     ok = self.rag.ingest_document(
                         file_path=rel_path,
                         content=chunk_text,

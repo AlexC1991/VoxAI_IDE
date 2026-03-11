@@ -1,386 +1,137 @@
-import os
-import logging
-
-log = logging.getLogger(__name__)
-
-# Resolved at runtime when user selects a project folder
-_project_root = None
-
-
-def set_project_root(path):
-    """Set the active project root. Called when user selects a project folder."""
-    global _project_root
-    _project_root = os.path.realpath(path)
-    log.info("Project root set to: %s", _project_root)
-
-
-def get_ide_root():
-    """Returns the root directory of the IDE installation (where main.py resides)."""
-    # This file is in core/agent_tools.py, so we go up one level
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def get_resource_path(relative_path):
-    """Returns an absolute path to a resource relative to the IDE root."""
-    return os.path.join(get_ide_root(), relative_path)
-
-
-def get_project_root():
-    global _project_root
-    if _project_root is None:
-        _project_root = os.path.realpath(os.getcwd())
-    return _project_root
-
-
-def resolve_path(path, default_to_project=True):
-    """Resolve *path* against the active project root when it is relative."""
-    if path in (None, ""):
-        return get_project_root() if default_to_project else os.path.realpath(os.getcwd())
-    if os.path.isabs(path):
-        return os.path.realpath(os.path.abspath(path))
-    base = get_project_root() if default_to_project else os.getcwd()
-    return os.path.realpath(os.path.join(base, path))
-
-
-def _is_inside_project(path):
-    """Return True if *path* resolves inside the project root."""
-    real = resolve_path(path)
-    root = get_project_root()
-    try:
-        return os.path.commonpath([real, root]) == root
-    except ValueError:
-        return False
-
-
-def _require_inside_project(path, action="modify"):
-    """Raise if the resolved path is outside the project directory."""
-    if not _is_inside_project(path):
-        raise PermissionError(
-            f"Cannot {action} '{path}' — it is outside the project directory ({get_project_root()}). "
-            f"Only read operations are allowed outside the project."
-        )
+from core.agent_tools_base import (
+    get_ide_root,
+    get_project_root,
+    get_resource_path,
+    resolve_path,
+    set_project_root,
+)
+from core.agent_tools_edit import (
+    _anchor_bounds,
+    _common_indent,
+    _edit_usage_error,
+    _find_edit_matches,
+    _find_indentation_aware_match,
+    _find_indentation_aware_matches,
+    _plan_edit,
+    _plan_line_range_edit,
+    _reindent_like_match,
+    _select_single_edit_match,
+    copy_file,
+    delete_file,
+    edit_file,
+    execute_command,
+    get_diff,
+    move_file,
+    preview_edit,
+    validate_syntax,
+    write_file,
+)
+from core.agent_tools_read_search import (
+    _build_test_search_terms,
+    _classify_module_reference,
+    _collect_import_statements,
+    _collect_python_symbols,
+    _collect_test_entries,
+    _format_context_block,
+    _iter_python_files,
+    _json_value_kind,
+    _load_python_ast,
+    _lookup_json_path,
+    _match_import_target,
+    _module_candidates_from_target,
+    _normalize_symbol_type,
+    _render_json_value,
+    _render_line_excerpt,
+    _resolve_symbol_query,
+    _scan_python_symbols,
+    _score_test_match,
+    _structure_label,
+    _summarize_json,
+    _symbol_matches_query,
+    find_files,
+    find_importers,
+    find_references,
+    find_symbol,
+    find_tests,
+    get_file_structure,
+    get_imports,
+    list_files,
+    read_file,
+    read_json,
+    read_python_symbols,
+    search_files,
+)
 
 
 class AgentToolHandler:
-    """File-system tool-belt for the AI agent.
-
-    Permissions model:
-      - READ / LIST / SEARCH / STRUCTURE are allowed anywhere (so the AI can
-        reference external projects for patterns, conventions, etc.).
-      - WRITE / MOVE / COPY / DELETE / EXECUTE are restricted to the project dir.
-    """
-
     EXCLUDE_DIRS = {
         '.git', '__pycache__', '.idea', 'venv', 'env',
         '.gemini', 'node_modules', 'target', 'build', 'dist',
     }
 
-    # ------------------------------------------------------------------
-    # READ (allowed everywhere)
-    # ------------------------------------------------------------------
-    @staticmethod
-    def resolve_path(path, default_to_project=True):
-        return resolve_path(path, default_to_project=default_to_project)
+    resolve_path = staticmethod(resolve_path)
+    read_file = classmethod(read_file)
+    list_files = classmethod(list_files)
+    find_files = classmethod(find_files)
+    search_files = classmethod(search_files)
+    read_json = classmethod(read_json)
+    get_file_structure = classmethod(get_file_structure)
+    find_symbol = classmethod(find_symbol)
+    find_references = classmethod(find_references)
+    read_python_symbols = classmethod(read_python_symbols)
+    find_tests = classmethod(find_tests)
+    get_imports = classmethod(get_imports)
+    find_importers = classmethod(find_importers)
 
-    @staticmethod
-    def read_file(path, start_line=1, end_line=150):
-        """Reads content of a file. Defaults to first 150 lines."""
-        full_path = resolve_path(path)
-        if not os.path.exists(full_path):
-            return f"[Error: File not found: {path}]"
-        if "crash.log" in os.path.basename(full_path):
-            return "[Skipping crash.log to prevent file lock issues]"
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+    write_file = staticmethod(write_file)
+    move_file = staticmethod(move_file)
+    copy_file = staticmethod(copy_file)
+    delete_file = staticmethod(delete_file)
+    execute_command = staticmethod(execute_command)
+    preview_edit = classmethod(preview_edit)
+    edit_file = classmethod(edit_file)
 
-            total_lines = len(lines)
-            start_idx = max(0, start_line - 1)
-            end_idx = min(total_lines, end_line)
+    _plan_edit = classmethod(_plan_edit)
+    _plan_line_range_edit = classmethod(_plan_line_range_edit)
+    _anchor_bounds = classmethod(_anchor_bounds)
+    _find_edit_matches = classmethod(_find_edit_matches)
+    _select_single_edit_match = classmethod(_select_single_edit_match)
+    _edit_usage_error = staticmethod(_edit_usage_error)
+    _common_indent = staticmethod(_common_indent)
+    _find_indentation_aware_matches = classmethod(_find_indentation_aware_matches)
+    _find_indentation_aware_match = classmethod(_find_indentation_aware_match)
+    _reindent_like_match = classmethod(_reindent_like_match)
 
-            content = "".join(lines[start_idx:end_idx])
+    _json_value_kind = staticmethod(_json_value_kind)
+    _render_json_value = staticmethod(_render_json_value)
+    _summarize_json = classmethod(_summarize_json)
+    _lookup_json_path = staticmethod(_lookup_json_path)
+    _render_line_excerpt = staticmethod(_render_line_excerpt)
+    _load_python_ast = staticmethod(_load_python_ast)
+    _collect_python_symbols = staticmethod(_collect_python_symbols)
+    _structure_label = staticmethod(_structure_label)
+    _iter_python_files = classmethod(_iter_python_files)
+    _scan_python_symbols = classmethod(_scan_python_symbols)
+    _normalize_symbol_type = staticmethod(_normalize_symbol_type)
+    _symbol_matches_query = classmethod(_symbol_matches_query)
+    _resolve_symbol_query = staticmethod(_resolve_symbol_query)
+    _format_context_block = staticmethod(_format_context_block)
+    _collect_import_statements = classmethod(_collect_import_statements)
+    _classify_module_reference = staticmethod(_classify_module_reference)
+    _module_candidates_from_target = staticmethod(_module_candidates_from_target)
+    _match_import_target = staticmethod(_match_import_target)
+    _build_test_search_terms = classmethod(_build_test_search_terms)
+    _collect_test_entries = staticmethod(_collect_test_entries)
+    _score_test_match = staticmethod(_score_test_match)
+    validate_syntax = staticmethod(validate_syntax)
+    get_diff = staticmethod(get_diff)
 
-            if total_lines > end_line:
-                content += (
-                    f"\n... (Showing lines {start_line}-{end_line} of {total_lines}. "
-                    f"Use read_file with start_line/end_line to see more.)"
-                )
-            return content
-        except Exception as e:
-            return f"[Error reading file: {e}]"
 
-    @staticmethod
-    def list_files(root_dir="."):
-        """Lists all files in the directory recursively (capped at 200 entries)."""
-        base_dir = resolve_path(root_dir)
-        if not os.path.exists(base_dir):
-            return f"[Error: Path not found: {root_dir}]"
-        file_list = []
-        max_entries = 200
-        for root, dirs, files in os.walk(base_dir):
-            dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
-            for file in files:
-                if file == "crash.log":
-                    continue
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, base_dir)
-                file_list.append(rel_path)
-                if len(file_list) >= max_entries:
-                    file_list.append(f"... (capped at {max_entries} entries)")
-                    return "\n".join(file_list)
-        return "\n".join(file_list)
-
-    @staticmethod
-    def search_files(query, root_dir=".", file_pattern=None, case_insensitive=False):
-        """Searches for a string or regex pattern in files.
-        Supports optional file_pattern glob (e.g. '*.py') and case_insensitive flag."""
-        import re as _re
-        import fnmatch
-        base_dir = resolve_path(root_dir)
-        if not os.path.exists(base_dir):
-            return f"[Error: Path not found: {root_dir}]"
-        matches = []
-        max_results = 100
-        try:
-            flags = _re.IGNORECASE if case_insensitive else 0
-            try:
-                pattern = _re.compile(query, flags)
-                use_regex = True
-            except _re.error:
-                use_regex = False
-
-            for root, dirs, files in os.walk(base_dir):
-                dirs[:] = [d for d in dirs if d not in AgentToolHandler.EXCLUDE_DIRS]
-                for file in files:
-                    if file == "crash.log":
-                        continue
-                    if file_pattern and not fnmatch.fnmatch(file, file_pattern):
-                        continue
-                    path = os.path.join(root, file)
-                    rel_path = os.path.relpath(path, base_dir)
-                    try:
-                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                            for i, line in enumerate(f):
-                                hit = (pattern.search(line) if use_regex
-                                       else (query.lower() in line.lower() if case_insensitive
-                                             else query in line))
-                                if hit:
-                                    matches.append(f"{rel_path}:{i+1}: {line.strip()[:120]}")
-                                    if len(matches) >= max_results:
-                                        return "\n".join(matches) + f"\n... (Showing first {max_results} results)"
-                    except Exception:
-                        continue
-            if not matches:
-                return f"No matches found for '{query}'"
-            return "\n".join(matches)
-        except Exception as e:
-            return f"[Error searching files: {e}]"
-
-    @staticmethod
-    def get_file_structure(path):
-        """Returns the structure (classes/methods) of a Python file."""
-        full_path = resolve_path(path)
-        if not os.path.exists(full_path):
-            return f"[Error: File not found: {path}]"
-        if not full_path.endswith('.py'):
-            return "[Info: structure extraction only supported for .py files]"
-        try:
-            import ast
-            with open(full_path, 'r', encoding='utf-8') as f:
-                tree = ast.parse(f.read())
-
-            structure = []
-
-            def visit(node, indent=0):
-                if isinstance(node, ast.ClassDef):
-                    structure.append(f"{'  ' * indent}Class: {node.name} (Line {node.lineno})")
-                    for child in node.body:
-                        visit(child, indent + 1)
-                elif isinstance(node, ast.FunctionDef):
-                    structure.append(f"{'  ' * indent}Function/Method: {node.name} (Line {node.lineno})")
-
-            for node in tree.body:
-                visit(node)
-
-            return "\n".join(structure) if structure else "[No classes/functions found]"
-        except Exception as e:
-            return f"[Error parsing file structure: {e}]"
-
-    # ------------------------------------------------------------------
-    # WRITE (project-only)
-    # ------------------------------------------------------------------
-    @staticmethod
-    def write_file(path, content):
-        """Writes content to a file. Must be inside the project directory."""
-        full_path = resolve_path(path)
-        try:
-            _require_inside_project(full_path, action="write to")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        try:
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return f"[Success: File written to {full_path}]"
-        except Exception as e:
-            return f"[Error writing file: {e}]"
-
-    @staticmethod
-    def move_file(src, dst):
-        """Moves or renames a file or directory. Both paths must be in the project."""
-        import shutil
-        src_path = resolve_path(src)
-        dst_path = resolve_path(dst)
-        try:
-            _require_inside_project(src_path, action="move from")
-            _require_inside_project(dst_path, action="move to")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        try:
-            dst_dir = os.path.dirname(dst_path)
-            if dst_dir and not os.path.exists(dst_dir):
-                os.makedirs(dst_dir, exist_ok=True)
-            shutil.move(src_path, dst_path)
-            return f"[Success: Moved '{src}' to '{dst}']"
-        except Exception as e:
-            return f"[Error moving file: {e}]"
-
-    @staticmethod
-    def copy_file(src, dst):
-        """Copies a file. Destination must be inside the project directory."""
-        import shutil
-        src_path = resolve_path(src)
-        dst_path = resolve_path(dst)
-        try:
-            _require_inside_project(dst_path, action="copy to")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        try:
-            dst_dir = os.path.dirname(dst_path)
-            if dst_dir and not os.path.exists(dst_dir):
-                os.makedirs(dst_dir, exist_ok=True)
-            shutil.copy2(src_path, dst_path)
-            return f"[Success: Copied '{src}' to '{dst}']"
-        except Exception as e:
-            return f"[Error copying file: {e}]"
-
-    @staticmethod
-    def delete_file(path):
-        """Deletes a file or directory. Must be inside the project directory."""
-        import shutil
-        full_path = resolve_path(path)
-        try:
-            _require_inside_project(full_path, action="delete")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        try:
-            if os.path.isfile(full_path):
-                os.remove(full_path)
-                return f"[Success: Deleted file '{path}']"
-            elif os.path.isdir(full_path):
-                shutil.rmtree(full_path)
-                return f"[Success: Deleted directory '{path}']"
-            else:
-                return f"[Error: Path not found '{path}']"
-        except Exception as e:
-            return f"[Error deleting '{path}': {e}]"
-
-    @staticmethod
-    def execute_command(command, cwd=None, timeout=120):
-        """Executes a shell command with streaming output capture.
-        Working directory must be inside the project. Default timeout: 120s."""
-        import subprocess
-        effective_cwd = resolve_path(cwd) if cwd not in (None, "") else get_project_root()
-        try:
-            _require_inside_project(effective_cwd, action="execute commands in")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                cwd=effective_cwd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            MAX_CMD_OUTPUT = 6000
-            output = ""
-            if result.stdout:
-                stdout = result.stdout
-                if len(stdout) > MAX_CMD_OUTPUT:
-                    stdout = stdout[:2000] + f"\n... [{len(stdout) - 4000} chars truncated] ...\n" + stdout[-2000:]
-                output += f"STDOUT:\n{stdout}"
-            if result.stderr:
-                stderr = result.stderr
-                if len(stderr) > MAX_CMD_OUTPUT:
-                    stderr = stderr[-MAX_CMD_OUTPUT:]
-                output += f"\nSTDERR:\n{stderr}"
-            if result.returncode != 0:
-                output += f"\n[Exit code: {result.returncode}]"
-            return output.strip() or "[Command completed with no output]"
-        except subprocess.TimeoutExpired:
-            return f"[Error: Command timed out after {timeout}s. Consider running it manually.]"
-        except Exception as e:
-            return f"[Error executing command: {e}]"
-
-    @staticmethod
-    def edit_file(path, old_text, new_text):
-        """Replaces a specific text block in a file (surgical edit).
-        Much more token-efficient than rewriting the whole file."""
-        full_path = resolve_path(path)
-        try:
-            _require_inside_project(full_path, action="edit")
-        except PermissionError as e:
-            return f"[Permission Denied: {e}]"
-        if not os.path.exists(full_path):
-            return f"[Error: File not found: {full_path}]"
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            if old_text not in content:
-                return (
-                    f"[Error: old_text not found in {path}. "
-                    f"Make sure the text matches exactly (including whitespace).]"
-                )
-            count = content.count(old_text)
-            if count > 1:
-                return (
-                    f"[Error: old_text matches {count} locations in {path}. "
-                    f"Provide more surrounding context to make it unique.]"
-                )
-            new_content = content.replace(old_text, new_text, 1)
-            with open(full_path, 'w', encoding='utf-8') as f:
-                f.write(new_content)
-            return f"[Success: Edited {full_path} — replaced {len(old_text)} chars with {len(new_text)} chars]"
-        except Exception as e:
-            return f"[Error editing file: {e}]"
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-    @staticmethod
-    def validate_syntax(code, filename):
-        """Checks code for syntax errors."""
-        _, ext = os.path.splitext(filename)
-        if ext == '.py':
-            try:
-                compile(code, filename, 'exec')
-                return None
-            except SyntaxError as e:
-                return f"SyntaxError line {e.lineno}: {e.msg}"
-        return None
-
-    @staticmethod
-    def get_diff(old_content, new_content, filename):
-        """Generates a unified diff."""
-        import difflib
-        old_lines = old_content.splitlines()
-        new_lines = new_content.splitlines()
-        diff = difflib.unified_diff(
-            old_lines, new_lines,
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}",
-            n=3,
-        )
-        return "\n".join(list(diff))
+__all__ = [
+    'AgentToolHandler',
+    'get_ide_root',
+    'get_project_root',
+    'get_resource_path',
+    'resolve_path',
+    'set_project_root',
+]

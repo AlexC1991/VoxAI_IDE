@@ -17,6 +17,7 @@ class TestRAGTools(unittest.TestCase):
         worker = ToolWorker([{'cmd': 'search_memory', 'args': {'query': 'auth'}}], auto_approve=True)
         outputs = []
         worker.finished.connect(outputs.append)
+        worker.settings.get_advanced_agent_tools_enabled = MagicMock(return_value=True)
 
         with patch.object(worker.settings, 'get_rag_enabled', return_value=False), \
              patch.object(worker.rag_client, 'retrieve') as mock_retrieve:
@@ -29,6 +30,7 @@ class TestRAGTools(unittest.TestCase):
         worker = ToolWorker([{'cmd': 'search_codebase', 'args': {'query': 'needle'}}], auto_approve=True)
         outputs = []
         worker.finished.connect(outputs.append)
+        worker.settings.get_advanced_agent_tools_enabled = MagicMock(return_value=True)
         chunks = [
             RetrievedChunk(1, 'chat:conv:msg1', 'chat memory about needle', 0.99),
             RetrievedChunk(2, 'file:ns:src/app.py:10-12', 'file one needle ' * 8, 0.70, 10, 12),
@@ -51,6 +53,7 @@ class TestRAGTools(unittest.TestCase):
         worker = ToolWorker([{'cmd': 'search_codebase', 'args': {'query': 'needle'}}], auto_approve=True)
         outputs = []
         worker.finished.connect(outputs.append)
+        worker.settings.get_advanced_agent_tools_enabled = MagicMock(return_value=True)
         chunks = [RetrievedChunk(1, 'chat:conv:msg1', 'chat memory only', 0.99)]
 
         with patch.object(worker.settings, 'get_rag_enabled', return_value=True), \

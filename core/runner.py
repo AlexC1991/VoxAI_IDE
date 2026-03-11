@@ -32,6 +32,8 @@ class Runner(QObject):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         self.process.setProcessEnvironment(env)
+        script_dir = os.path.dirname(os.path.abspath(script_path)) or os.getcwd()
+        self.process.setWorkingDirectory(script_dir)
 
         _, ext = os.path.splitext(script_path)
         ext = ext.lower()

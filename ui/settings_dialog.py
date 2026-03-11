@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
     QTabWidget,
+    QListWidgetItem,
 )
 from PySide6.QtCore import Qt
 from core.settings import SettingsManager
@@ -35,17 +36,17 @@ class SettingsDialog(QDialog):
         self.enabled_models = set(self.settings_manager.get_enabled_models())
 
         self.providers = [
-            ("openai", "OpenAI", "openai", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]),
+            ("openai", "OpenAI", "openai", ["gpt-5.4", "gpt-4.1", "gpt-4o"]),
             ("google", "Google Gemini", "google",
-             ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]),
+             ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"]),
             ("anthropic", "Anthropic", "anthropic",
-             ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"]),
-            ("deepseek", "DeepSeek", "deepseek", ["deepseek-coder", "deepseek-chat"]),
+             ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]),
+            ("deepseek", "DeepSeek", "deepseek", ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]),
             ("mistral", "Mistral AI", "mistral",
              ["mistral-large-latest", "mistral-small-latest"]),
-            ("xai", "xAI (Grok)", "xai", ["grok-beta"]),
-            ("kimi", "Kimi (Moonshot)", "kimi", ["moonshot-v1-8k", "moonshot-v1-32k"]),
-            ("zai", "Z.ai (Zhipu)", "zai", ["glm-4", "glm-3-turbo"]),
+            ("xai", "xAI (Grok)", "xai", ["grok-4", "grok-3-beta", "grok-beta"]),
+            ("kimi", "Kimi (Moonshot)", "kimi", ["kimi-k2.5", "moonshot-v1-32k", "moonshot-v1-8k"]),
+            ("zai", "Z.ai (Zhipu)", "zai", ["glm-5", "glm-4.5", "glm-4"]),
             ("openrouter", "OpenRouter", "openrouter",
              [m.split("] ", 1)[1] for m in SettingsManager.DEFAULT_OPENROUTER_MODELS]),
         ]
@@ -123,6 +124,14 @@ class SettingsDialog(QDialog):
         self.provider_combo.setMinimumWidth(200)
         selector_row.addWidget(self.provider_combo, 1)
         layout.addLayout(selector_row)
+
+        self.show_unstable_models_cb = QCheckBox("Show quarantined / unhealthy models")
+        self.show_unstable_models_cb.setChecked(self.settings_manager.get_show_unstable_models())
+        self.show_unstable_models_cb.setToolTip(
+            "Reveal routes that are hidden from the normal picker because they are known-bad, unhealthy, or not configured."
+        )
+        self.show_unstable_models_cb.toggled.connect(self._refresh_provider_lists)
+        layout.addWidget(self.show_unstable_models_cb)
 
         # Stacked pages — one per provider
         self.stack = QStackedWidget()
@@ -298,10 +307,21 @@ class SettingsDialog(QDialog):
         self.auto_save_cb.setToolTip("Keep the current chat transcript saved automatically in the project")
         agent_layout.addWidget(self.auto_save_cb)
 
+        self.advanced_tools_cb = QCheckBox(
+            "Enable advanced agent tools (git, web, RAG indexing, destructive file ops)"
+        )
+        self.advanced_tools_cb.setChecked(self.settings_manager.get_advanced_agent_tools_enabled())
+        self.advanced_tools_cb.setToolTip(
+            "Off by default. Keeps the agent on the smaller stable local code/edit/test toolset."
+        )
+        self.advanced_tools_cb.toggled.connect(self._sync_agent_tool_toggles)
+        agent_layout.addWidget(self.advanced_tools_cb)
+
         self.web_search_cb = QCheckBox("Enable the web-search tool (requires internet access)")
         self.web_search_cb.setChecked(self.settings_manager.get_web_search_enabled())
-        self.web_search_cb.setToolTip("Allow the agent to fetch information from the public web")
+        self.web_search_cb.setToolTip("Allow the agent to fetch information from the public web. Requires Advanced Agent Tools.")
         agent_layout.addWidget(self.web_search_cb)
+        self._sync_agent_tool_toggles()
 
         agent_group.setLayout(agent_layout)
         layout.addWidget(agent_group)
@@ -451,6 +471,7 @@ class SettingsDialog(QDialog):
         available_list.clear()
         selected_list.clear()
 
+        show_unstable = self.show_unstable_models_cb.isChecked() if hasattr(self, "show_unstable_models_cb") else False
         prefix = f"[{p_name}] "
 
         provider_enabled = []
@@ -459,19 +480,64 @@ class SettingsDialog(QDialog):
                 provider_enabled.append(em)
 
         for em in provider_enabled:
-            selected_list.addItem(em)
+            selected_list.addItem(self._make_model_item(em))
 
         for code in p_defaults:
             full = f"{prefix}{code}"
-            if full not in self.enabled_models:
-                available_list.addItem(full)
+            if full in self.enabled_models:
+                continue
+            entry = AIClient.get_model_picker_entry(full, self.settings_manager)
+            if show_unstable or entry.get("show_in_settings"):
+                available_list.addItem(self._make_model_item(full))
+
+    def _make_model_item(self, full_model_name):
+        entry = AIClient.get_model_picker_entry(full_model_name, self.settings_manager)
+        item = QListWidgetItem(entry.get("label") or full_model_name)
+        item.setData(Qt.UserRole, full_model_name)
+        if entry.get("tooltip"):
+            item.setToolTip(entry["tooltip"])
+        return item
+
+    @staticmethod
+    def _item_full_model(item):
+        return (item.data(Qt.UserRole) or item.text() or "").strip()
+
+    def _refresh_provider_lists(self):
+        self._sync_enabled_models_from_ui()
+        for p_id, p_name, _, p_defaults in self.providers:
+            ui = self.provider_ui.get(p_id)
+            if not ui:
+                continue
+            self._populate_lists(p_id, p_name, p_defaults, ui["available"], ui["selected"])
+
+    def _sync_agent_tool_toggles(self):
+        advanced = self.advanced_tools_cb.isChecked() if hasattr(self, 'advanced_tools_cb') else False
+        if hasattr(self, 'web_search_cb'):
+            self.web_search_cb.setEnabled(advanced)
+            if advanced:
+                self.web_search_cb.setToolTip("Allow the agent to fetch information from the public web.")
+            else:
+                self.web_search_cb.setToolTip("Enable Advanced Agent Tools first to allow web access.")
+
+    def _sync_enabled_models_from_ui(self):
+        if not getattr(self, "provider_ui", None):
+            return
+        enabled = set()
+        for ui in self.provider_ui.values():
+            selected_list = ui.get("selected")
+            if selected_list is None:
+                continue
+            for index in range(selected_list.count()):
+                enabled.add(self._item_full_model(selected_list.item(index)))
+        self.enabled_models = enabled
 
     def _move_items(self, source_list, target_list):
         for item in source_list.selectedItems():
             row = source_list.row(item)
-            text = item.text()
+            full_model = self._item_full_model(item)
             source_list.takeItem(row)
-            target_list.addItem(text)
+            target_list.addItem(self._make_model_item(full_model))
+        self._sync_enabled_models_from_ui()
 
     def _fetch_models_for_provider(self, p_id):
         ui = self.provider_ui[p_id]
@@ -538,8 +604,10 @@ class SettingsDialog(QDialog):
             for m in models:
                 full = f"{prefix}{m}"
                 if full not in existing:
-                    avail_list.addItem(full)
-                    count += 1
+                    entry = AIClient.get_model_picker_entry(full, self.settings_manager)
+                    if self.show_unstable_models_cb.isChecked() or entry.get("show_in_settings"):
+                        avail_list.addItem(self._make_model_item(full))
+                        count += 1
 
             if count == 0:
                 QMessageBox.information(
@@ -562,7 +630,9 @@ class SettingsDialog(QDialog):
         self.settings_manager.set_max_history_tokens(self.token_budget.value())
         self.settings_manager.set_auto_approve_writes(self.auto_approve_cb.isChecked())
         self.settings_manager.set_auto_save_conversation(self.auto_save_cb.isChecked())
+        self.settings_manager.set_advanced_agent_tools_enabled(self.advanced_tools_cb.isChecked())
         self.settings_manager.set_web_search_enabled(self.web_search_cb.isChecked())
+        self.settings_manager.set_show_unstable_models(self.show_unstable_models_cb.isChecked())
 
         # Appearance
         self.settings_manager.set_chat_user_color(self.user_color_input.text().strip())
@@ -583,7 +653,7 @@ class SettingsDialog(QDialog):
         for p_id in self.provider_ui:
             sel_list = self.provider_ui[p_id]["selected"]
             for i in range(sel_list.count()):
-                all_enabled.append(sel_list.item(i).text())
+                all_enabled.append(self._item_full_model(sel_list.item(i)))
 
         self.settings_manager.set_enabled_models(all_enabled)
         self.accept()

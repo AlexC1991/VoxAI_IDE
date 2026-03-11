@@ -29,7 +29,9 @@ class TestSettingsDialog(unittest.TestCase):
         mgr.get_max_history_tokens.return_value = 24000
         mgr.get_auto_approve_writes.return_value = False
         mgr.get_auto_save_conversation.return_value = True
+        mgr.get_advanced_agent_tools_enabled.return_value = False
         mgr.get_web_search_enabled.return_value = False
+        mgr.get_show_unstable_models.return_value = False
         mgr.get_rag_enabled.return_value = True
         mgr.get_rag_top_k.return_value = 5
         mgr.get_rag_min_score.return_value = 0.0
@@ -60,6 +62,17 @@ class TestSettingsDialog(unittest.TestCase):
         self.assertEqual(dlg.cancel_btn.text(), 'Close')
         dlg.close()
 
+    def test_web_search_toggle_is_gated_by_advanced_tools_toggle(self):
+        settings_mock = self._settings_mock()
+        with patch('ui.settings_dialog.SettingsManager', return_value=settings_mock):
+            dlg = SettingsDialog()
+
+        self.assertFalse(dlg.advanced_tools_cb.isChecked())
+        self.assertFalse(dlg.web_search_cb.isEnabled())
+        dlg.advanced_tools_cb.setChecked(True)
+        self.assertTrue(dlg.web_search_cb.isEnabled())
+        dlg.close()
+
     def test_test_provider_selector_uses_polished_placeholder_and_reload_label(self):
         settings_mock = self._settings_mock()
         with patch('ui.settings_dialog.SettingsManager', return_value=settings_mock):
@@ -69,6 +82,38 @@ class TestSettingsDialog(unittest.TestCase):
         combo = ui['scenario_combo']
         self.assertEqual(combo.itemText(0), 'Choose a saved scenario…')
         self.assertEqual(ui['fetch_btn'].text(), 'Reload Scenarios')
+        dlg.close()
+
+    def test_quarantined_models_are_hidden_by_default_in_provider_lists(self):
+        settings_mock = self._settings_mock()
+        settings_mock.get_enabled_models.return_value = [
+            '[OpenRouter] anthropic/claude-opus-4.6',
+            '[OpenRouter] x-ai/grok-code-fast-1',
+        ]
+        with patch('ui.settings_dialog.SettingsManager', return_value=settings_mock):
+            dlg = SettingsDialog()
+
+        openrouter_ui = dlg.provider_ui['openrouter']
+        available_labels = [openrouter_ui['available'].item(i).text() for i in range(openrouter_ui['available'].count())]
+        selected_labels = [openrouter_ui['selected'].item(i).text() for i in range(openrouter_ui['selected'].count())]
+        self.assertFalse(any('claude-opus-4.6' in label for label in available_labels))
+        self.assertTrue(any('claude-opus-4.6' in label and '⛔' in label for label in selected_labels))
+        dlg.close()
+
+    def test_show_unstable_toggle_reveals_quarantined_models(self):
+        settings_mock = self._settings_mock()
+        settings_mock.get_show_unstable_models.return_value = True
+        settings_mock.get_api_key.return_value = 'dummy-key'
+        with patch('ui.settings_dialog.SettingsManager', return_value=settings_mock), \
+             patch('ui.settings_dialog.AIClient.fetch_models', return_value=['anthropic/claude-opus-4.6']), \
+             patch('ui.settings_dialog.QMessageBox.information'), \
+             patch('ui.settings_dialog.QMessageBox.warning'):
+            dlg = SettingsDialog()
+            dlg._fetch_models_for_provider('openrouter')
+
+        openrouter_ui = dlg.provider_ui['openrouter']
+        available_labels = [openrouter_ui['available'].item(i).text() for i in range(openrouter_ui['available'].count())]
+        self.assertTrue(any('claude-opus-4.6' in label and '⛔' in label for label in available_labels))
         dlg.close()
 
     def test_selecting_test_scenario_updates_script_path_field(self):
@@ -109,6 +154,19 @@ class TestSettingsDialog(unittest.TestCase):
         settings_mock.set_test_provider_script_path.assert_called_with('.vox/custom.json')
         clear_mock.assert_called_once()
         self.assertEqual(ui['scenario_combo'].currentData(), '.vox/custom.json')
+        dlg.close()
+
+    def test_provider_starter_lists_surface_current_model_families(self):
+        settings_mock = self._settings_mock()
+        with patch('ui.settings_dialog.SettingsManager', return_value=settings_mock):
+            dlg = SettingsDialog()
+
+        providers = {provider_id: defaults for provider_id, _name, _key_name, defaults in dlg.providers}
+        self.assertIn('gpt-5.4', providers['openai'])
+        self.assertIn('gemini-2.5-pro', providers['google'])
+        self.assertIn('grok-4', providers['xai'])
+        self.assertIn('kimi-k2.5', providers['kimi'])
+        self.assertIn('glm-5', providers['zai'])
         dlg.close()
 
 

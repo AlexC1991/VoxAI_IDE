@@ -51,9 +51,14 @@ class TestPromptSafety(unittest.TestCase):
         history = MockWorker.call_args.args[0]
         base_prompt = history[0]['content']
 
-        self.assertIn("Tool-First: Use native tools", base_prompt)
+        self.assertIn("Tool-First: Use native local tools", base_prompt)
         self.assertIn("Tool Safety: Emit XML tool tags ONLY when you intend real execution", base_prompt)
         self.assertIn("Never put long multi-line snippets inside <edit_file", base_prompt)
+        self.assertIn("Only run/read further when the user explicitly asked for validation/inspection", base_prompt)
+        self.assertIn("GROUNDED, CONCISE summary", base_prompt)
+        self.assertIn("at most 2 short bullets or 3 very short lines total", base_prompt)
+        self.assertIn("Include next-step advice only if the user asked for it", base_prompt)
+        self.assertNotIn("After writing a file, STOP", base_prompt)
         self.assertNotIn("THIS IS A GREETING", base_prompt)
 
 if __name__ == '__main__':

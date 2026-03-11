@@ -43,6 +43,7 @@ class TestFetchModels(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "data": [
+                {"id": "x-ai/grok-code-fast-1"},
                 {"id": "anthropic/claude-3"},
                 {"id": "openai/gpt-4o"},
                 {"id": "qwen/qwen3-coder:free"},
@@ -53,7 +54,7 @@ class TestFetchModels(unittest.TestCase):
         
         models = AIClient.fetch_models("openrouter", "fake-key")
         
-        self.assertEqual(models[:2], ["qwen/qwen3-coder:free", "z-ai/glm-4.5-air:free"])
+        self.assertEqual(models[:3], ["x-ai/grok-code-fast-1", "qwen/qwen3-coder:free", "z-ai/glm-4.5-air:free"])
         self.assertIn("anthropic/claude-3", models)
         # Check URL: https://openrouter.ai/api/v1/chat/completions -> https://openrouter.ai/api/v1/models
         mock_get.assert_called_with(
@@ -62,9 +63,10 @@ class TestFetchModels(unittest.TestCase):
             timeout=10
         )
 
-    def test_sort_model_ids_prioritizes_curated_openrouter_free_models(self):
+    def test_sort_model_ids_prioritizes_curated_openrouter_benchmark_models(self):
         ordered = AIClient._sort_model_ids("openrouter", [
             "openrouter/auto",
+            "x-ai/grok-code-fast-1",
             "google/gemma-3-4b-it:free",
             "qwen/qwen3-coder:free",
             "anthropic/claude-3",
@@ -73,8 +75,9 @@ class TestFetchModels(unittest.TestCase):
         ])
 
         self.assertEqual(
-            ordered[:4],
+            ordered[:5],
             [
+                "x-ai/grok-code-fast-1",
                 "qwen/qwen3-coder:free",
                 "z-ai/glm-4.5-air:free",
                 "google/gemma-3-4b-it:free",

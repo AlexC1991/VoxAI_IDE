@@ -72,7 +72,9 @@ class TestGuiNotifications(unittest.TestCase):
 
         dummy.chat_panel.refresh_models.assert_called_once()
         status_bar.showMessage.assert_called_once()
-        dummy._status_openrouter.setText.assert_called_with("OpenRouter ready: z-ai/glm-4.5-air:free")
+        status_text = dummy._status_openrouter.setText.call_args.args[0]
+        self.assertIn("OpenRouter ready: z-ai/glm-4.5-air:free", status_text)
+        self.assertIn("Benchmark:", status_text)
 
     def test_apply_openrouter_health_indicator_updates_label_style(self):
         label = MagicMock()
@@ -88,8 +90,12 @@ class TestGuiNotifications(unittest.TestCase):
             "recommended_full_model": "[OpenRouter] qwen/qwen3-coder:free",
         })
 
-        label.setText.assert_called_once_with("OpenRouter cooling down: qwen/qwen3-coder:free")
-        label.setToolTip.assert_called_once_with("[OpenRouter] qwen/qwen3-coder:free")
+        status_text = label.setText.call_args.args[0]
+        tooltip = label.setToolTip.call_args.args[0]
+        self.assertIn("OpenRouter cooling down: qwen/qwen3-coder:free", status_text)
+        self.assertIn("Benchmark:", status_text)
+        self.assertIn("[OpenRouter] qwen/qwen3-coder:free", tooltip)
+        self.assertIn("Preferred benchmark model", tooltip)
 
     def test_openrouter_notification_refreshes_indicator(self):
         status_bar = MagicMock()
@@ -107,6 +113,26 @@ class TestGuiNotifications(unittest.TestCase):
 
         dummy._apply_openrouter_health_indicator.assert_called_once()
         status_bar.showMessage.assert_called_once()
+
+    def test_shutdown_background_work_stops_chat_threads_and_health_refresh(self):
+        timer = MagicMock()
+        thread = MagicMock()
+        thread.isRunning.return_value = True
+        chat_panel = SimpleNamespace(_shutdown_background_threads=MagicMock())
+        dummy = SimpleNamespace(
+            chat_panel=chat_panel,
+            _openrouter_health_timer=timer,
+            _openrouter_health_thread=thread,
+            _clear_openrouter_health_refresh_refs=MagicMock(),
+        )
+
+        CodingAgentIDE._shutdown_background_work(dummy)
+
+        chat_panel._shutdown_background_threads.assert_called_once()
+        timer.stop.assert_called_once()
+        thread.quit.assert_called_once()
+        thread.wait.assert_called_once_with(5000)
+        dummy._clear_openrouter_health_refresh_refs.assert_called_once()
 
 
 if __name__ == '__main__':
